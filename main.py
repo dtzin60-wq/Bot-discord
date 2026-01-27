@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from discord.ui import View, Button, Modal, TextInput
+from discord.ui import View, Button
 import os
 import random
 import re
@@ -11,7 +11,6 @@ intents.members = True
 
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-pix_db = {}
 fila_mediadores = []
 filas = {}
 partidas = {}
@@ -54,7 +53,7 @@ async def filamediador(ctx):
     embed.add_field(name="Mediadores", value="Nenhum")
     await ctx.send(embed=embed, view=MediadorView())
 
-# ================= FILA APOSTAS =================
+# ================= FILA APOSTA =================
 class FilaView(View):
     def __init__(self, modo):
         super().__init__(timeout=None)
@@ -68,6 +67,7 @@ class FilaView(View):
         embed.add_field(name="Modo", value=self.modo)
         embed.add_field(name="Valor", value=f"R$ {formatar_valor(filas[self.modo]['valor'])}")
         embed.add_field(name="Jogadores", value=nomes)
+
         await interaction.message.edit(embed=embed, view=self)
 
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
@@ -106,13 +106,25 @@ class FilaView(View):
 
         filas[self.modo]["jogadores"] = []
 
-        await canal.send(
-            "💬 **Conversem e se resolvam. Quando decidir, aperte em Confirmar!**",
-            view=ConfirmacaoView()
+        embed = discord.Embed(
+            title="⏳ Aguardando Confirmações",
+            color=0x2f3136
         )
+        embed.add_field(name="👑 Modo:", value=self.modo, inline=False)
+        embed.add_field(name="💎 Valor da aposta:", value=f"R$ {formatar_valor(filas[self.modo]['valor'])}", inline=False)
+        embed.add_field(
+            name="⚔ Jogadores:",
+            value=f"{jogadores[0].mention}\n{jogadores[1].mention}",
+            inline=False
+        )
+
+        await canal.send(embed=embed, view=ConfirmacaoView())
 
 # ================= CONFIRMAÇÃO =================
 class ConfirmacaoView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green)
     async def confirmar(self, interaction: discord.Interaction, button: Button):
         dados = partidas.get(interaction.channel.id)
@@ -128,7 +140,7 @@ class ConfirmacaoView(View):
             mediador = dados["mediador"]
             mediador_nome = mediador.mention if mediador else "Nenhum"
 
-            embed = discord.Embed(title="✅ Partida Confirmada", color=0x2ecc71)
+            embed = discord.Embed(title="✅ Partida Confirmada", color=0x00ff00)
             embed.add_field(name="Modo", value=dados["modo"], inline=False)
             embed.add_field(name="Valor", value=f"R$ {formatar_valor(dados['valor'])}", inline=False)
             embed.add_field(
@@ -142,15 +154,19 @@ class ConfirmacaoView(View):
 
         await interaction.response.defer()
 
-# ================= COPIAR ID =================
-class CopiarIDView(View):
-    def __init__(self, id_partida):
-        super().__init__(timeout=None)
-        self.id_partida = id_partida
+    @discord.ui.button(label="Recusar", style=discord.ButtonStyle.red)
+    async def recusar(self, interaction: discord.Interaction, button: Button):
+        await interaction.channel.send("❌ Partida cancelada.")
+        del partidas[interaction.channel.id]
+        await interaction.response.defer()
 
-    @discord.ui.button(label="Copiar ID", style=discord.ButtonStyle.green)
-    async def copiar(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message(f"`{self.id_partida}`", ephemeral=True)
+    @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.gray)
+    async def regras(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message(
+            "📜 Regras adicionais podem ser combinadas entre os participantes.\n"
+            "Se não existir no regulamento oficial, tire print do acordo.",
+            ephemeral=True
+        )
 
 # ================= ID + SENHA =================
 @bot.event
@@ -168,16 +184,15 @@ async def on_message(message):
                 f"Modo: {dados['modo']}\n"
                 f"Valor: R$ {formatar_valor(dados['valor'])}\n"
                 f"Jogadores: {dados['jogadores'][0].mention} x {dados['jogadores'][1].mention}\n"
-                f"ID da partida: {idp}\n"
-                f"Senha: {senha}",
-                view=CopiarIDView(idp)
+                f"ID: {idp}\n"
+                f"Senha: {senha}"
             )
 
 # ================= COMANDO FILA =================
 @bot.command()
 async def fila(ctx, modo: str, valor_txt: str):
     if not valor_txt.lower().startswith("valor:"):
-        return await ctx.send("Use: .fila 1v1 valor:10,00")
+        return await ctx.send("Use: .fila 1v1 valor:2,00")
 
     valor = float(valor_txt.replace("valor:", "").replace(",", "."))
     filas[modo] = {"jogadores": [], "valor": valor}
