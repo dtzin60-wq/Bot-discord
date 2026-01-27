@@ -1,204 +1,184 @@
 import discord
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
-import os
-import random
 
 intents = discord.Intents.default()
+intents.message_toggle = True
 intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-NOME_CARGO_MEDIADOR = "Mediador"
+CARGO_PERMITIDO = "Xoxota"
+CARGO_MEDIADOR = "Mediador"
 
-pix_db = {}
+fila_jogadores = []
 fila_mediadores = []
-filas = {}
-partidas = {}
+pix_mediadores = {}
 
-def formatar_valor(v):
-    return f"{v:.2f}".replace(".", ",")
+painel_fila_msg = None
+painel_mediador_msg = None
+
+def tem_cargo(user, nome):
+    return discord.utils.get(user.roles, name=nome)
 
 # ================= PIX =================
 class PixModal(Modal, title="Cadastrar Pix"):
     nome = TextInput(label="Nome do titular")
     chave = TextInput(label="Chave Pix")
-    qrcode = TextInput(label="Link do QR Code")
+    qr = TextInput(label="Link do QR Code")
 
     async def on_submit(self, interaction: discord.Interaction):
-        pix_db[interaction.user.id] = {
+        pix_mediadores[interaction.user.id] = {
             "nome": self.nome.value,
             "chave": self.chave.value,
-            "qrcode": self.qrcode.value
+            "qr": self.qr.value
         }
         await interaction.response.send_message("✅ Pix cadastrado!", ephemeral=True)
 
-class PixView(View):
-    @discord.ui.button(label="Cadastrar Pix", style=discord.ButtonStyle.green)
-    async def cadastrar(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(PixModal())
+# ================= FILA JOGADORES =================
+class FilaView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-@bot.command()
-async def cadastrarpix(ctx):
-    await ctx.send("💰 Painel Pix", view=PixView())
+    @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
+    async def entrar(self, interaction: discord.Interaction, button: Button):
+        if interaction.user not in fila_jogadores:
+            fila_jogadores.append(interaction.user)
+        await atualizar_fila(interaction)
 
-# ================= FILA MEDIADOR =================
+    @discord.ui.button(label="Sair", style=discord.ButtonStyle.red)
+    async def sair(self, interaction: discord.Interaction, button: Button):
+        if interaction.user in fila_jogadores:
+            fila_jogadores.remove(interaction.user)
+        await atualizar_fila(interaction)
+
+# ================= FILA MEDIADORES =================
 class MediadorView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def atualizar(self, interaction):
-        nomes = "\n".join(u.mention for u in fila_mediadores) or "Nenhum"
-        embed = discord.Embed(title="Fila de Mediadores", color=0xffaa00)
-        embed.add_field(name="Mediadores", value=nomes)
-        await interaction.message.edit(embed=embed, view=self)
-
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
     async def entrar(self, interaction: discord.Interaction, button: Button):
-        cargo = discord.utils.get(interaction.user.roles, name=NOME_CARGO_MEDIADOR)
-        if not cargo:
-            return await interaction.response.send_message("❌ Você não é mediador.", ephemeral=True)
-
+        if not tem_cargo(interaction.user, CARGO_MEDIADOR):
+            await interaction.response.send_message("❌ Você não é mediador", ephemeral=True)
+            return
         if interaction.user not in fila_mediadores:
             fila_mediadores.append(interaction.user)
-
-        await self.atualizar(interaction)
-        await interaction.response.defer()
+        await atualizar_mediador(interaction)
 
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red)
     async def sair(self, interaction: discord.Interaction, button: Button):
         if interaction.user in fila_mediadores:
             fila_mediadores.remove(interaction.user)
-        await self.atualizar(interaction)
-        await interaction.response.defer()
+        await atualizar_mediador(interaction)
+
+# ================= ATUALIZAR =================
+async def atualizar_fila(interaction):
+    global painel_fila_msg
+
+    embed = discord.Embed(title="Aguardando Jogadores", color=0x2ecc71)
+    jogadores = "\n".join([j.mention for j in fila_jogadores]) or "Nenhum"
+    embed.add_field(name="Jogadores", value=jogadores)
+
+    if painel_fila_msg:
+        await painel_fila_msg.edit(embed=embed, view=FilaView())
+    else:
+        painel_fila_msg = await interaction.channel.send(embed=embed, view=FilaView())
+
+    if len(fila_jogadores) >= 2 and len(fila_mediadores) >= 1:
+        await criar_partida(interaction.guild)
+
+async def atualizar_mediador(interaction):
+    global painel_mediador_msg
+
+    embed = discord.Embed(title="Fila de Mediadores", color=0xf1c40f)
+    mediadores = "\n".join([m.mention for m in fila_mediadores]) or "Nenhum"
+    embed.add_field(name="Mediadores", value=mediadores)
+
+    if painel_mediador_msg:
+        await painel_mediador_msg.edit(embed=embed, view=MediadorView())
+    else:
+        painel_mediador_msg = await interaction.channel.send(embed=embed, view=MediadorView())
+
+# ================= PARTIDA =================
+async def criar_partida(guild):
+    jogadores = fila_jogadores[:2]
+    mediador = fila_mediadores[0]
+
+    fila_jogadores.clear()
+    fila_mediadores.pop(0)
+
+    categoria = discord.utils.get(guild.categories, name="PARTIDAS")
+    if not categoria:
+        categoria = await guild.create_category("PARTIDAS")
+
+    canal = await guild.create_text_channel(f"partida-{jogadores[0].name}-vs-{jogadores[1].name}", category=categoria)
+
+    embed = discord.Embed(title="Partida Confirmada", color=0x3498db)
+    embed.add_field(name="Jogadores", value=f"{jogadores[0].mention}\n{jogadores[1].mention}")
+    embed.add_field(name="Mediador", value=mediador.mention)
+
+    await canal.send(embed=embed, view=ConfirmarView(jogadores, mediador))
+
+# ================= CONFIRMAR =================
+class ConfirmarView(View):
+    def __init__(self, jogadores, mediador):
+        super().__init__(timeout=None)
+        self.jogadores = jogadores
+        self.mediador = mediador
+        self.confirmados = []
+
+    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green)
+    async def confirmar(self, interaction: discord.Interaction, button: Button):
+        if interaction.user not in self.jogadores:
+            await interaction.response.send_message("❌ Você não é jogador", ephemeral=True)
+            return
+
+        if interaction.user not in self.confirmados:
+            self.confirmados.append(interaction.user)
+
+        await interaction.channel.purge(limit=10)
+
+        embed = discord.Embed(title="Confirmações", color=0x2ecc71)
+        embed.add_field(name="Confirmados", value="\n".join([u.mention for u in self.confirmados]))
+
+        if len(self.confirmados) == 2:
+            pix = pix_mediadores.get(self.mediador.id)
+            if pix:
+                embed.add_field(
+                    name="Pix do Mediador",
+                    value=f"Nome: {pix['nome']}\nChave: {pix['chave']}\nQR: {pix['qr']}"
+                )
+
+        await interaction.channel.send(embed=embed, view=self)
+
+# ================= COMANDOS =================
+@bot.command()
+async def fila(ctx):
+    global painel_fila_msg
+    if not tem_cargo(ctx.author, CARGO_PERMITIDO):
+        return
+
+    embed = discord.Embed(title="Aguardando Jogadores", color=0x2ecc71)
+    embed.add_field(name="Jogadores", value="Nenhum")
+    painel_fila_msg = await ctx.send(embed=embed, view=FilaView())
 
 @bot.command()
 async def filamediador(ctx):
-    embed = discord.Embed(title="Fila de Mediadores", color=0xffaa00)
+    global painel_mediador_msg
+    if not tem_cargo(ctx.author, CARGO_PERMITIDO):
+        return
+
+    embed = discord.Embed(title="Fila de Mediadores", color=0xf1c40f)
     embed.add_field(name="Mediadores", value="Nenhum")
-    await ctx.send(embed=embed, view=MediadorView())
+    painel_mediador_msg = await ctx.send(embed=embed, view=MediadorView())
 
-# ================= FILA APOSTA =================
-class FilaView(View):
-    def __init__(self, modo):
-        super().__init__(timeout=None)
-        self.modo = modo
-
-    async def atualizar(self, interaction):
-        fila = filas[self.modo]["jogadores"]
-        nomes = "\n".join(u.mention for u in fila) or "Nenhum"
-
-        embed = discord.Embed(title="Aguardando Jogadores", color=0x2ecc71)
-        embed.add_field(name="Modo", value=self.modo, inline=False)
-        embed.add_field(name="Valor", value=f"R$ {formatar_valor(filas[self.modo]['valor'])}", inline=False)
-        embed.add_field(name="Jogadores", value=nomes, inline=False)
-
-        await interaction.message.edit(embed=embed, view=self)
-
-    @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
-    async def entrar(self, interaction: discord.Interaction, button: Button):
-        fila = filas[self.modo]["jogadores"]
-
-        if interaction.user in fila:
-            return await interaction.response.send_message("Você já está na fila.", ephemeral=True)
-
-        if len(fila) >= 2:
-            return await interaction.response.send_message("Fila cheia.", ephemeral=True)
-
-        fila.append(interaction.user)
-        await self.atualizar(interaction)
-
-        if len(fila) == 2:
-            await self.criar_canal(interaction)
-
-        await interaction.response.defer()
-
-    @discord.ui.button(label="Sair", style=discord.ButtonStyle.red)
-    async def sair(self, interaction: discord.Interaction, button: Button):
-        fila = filas[self.modo]["jogadores"]
-        if interaction.user in fila:
-            fila.remove(interaction.user)
-        await self.atualizar(interaction)
-        await interaction.response.defer()
-
-    async def criar_canal(self, interaction):
-        guild = interaction.guild
-        jogadores = filas[self.modo]["jogadores"].copy()
-
-        filas[self.modo]["jogadores"] = []  # REMOVE DA FILA AUTOMÁTICO
-
-        canal = await guild.create_text_channel(f"partida-{self.modo}")
-
-        mediador = random.choice(fila_mediadores) if fila_mediadores else None
-
-        partidas[canal.id] = {
-            "jogadores": jogadores,
-            "valor": filas[self.modo]["valor"],
-            "modo": self.modo,
-            "mediador": mediador,
-            "confirmados": []
-        }
-
-        embed = discord.Embed(title="Aguardando Confirmações", color=0x2ecc71)
-        embed.add_field(name="Modo", value=self.modo, inline=False)
-        embed.add_field(name="Valor", value=f"R$ {formatar_valor(filas[self.modo]['valor'])}", inline=False)
-        embed.add_field(name="Jogadores", value=f"{jogadores[0].mention} x {jogadores[1].mention}", inline=False)
-
-        await canal.send(embed=embed, view=ConfirmacaoView())
-
-# ================= CONFIRMAÇÃO =================
-class ConfirmacaoView(View):
-    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green)
-    async def confirmar(self, interaction: discord.Interaction, button: Button):
-        dados = partidas.get(interaction.channel.id)
-        if not dados:
-            return
-
-        if interaction.user not in dados["confirmados"]:
-            dados["confirmados"].append(interaction.user)
-
-        if len(dados["confirmados"]) == 2:
-            await interaction.channel.purge()
-
-            mediador = dados["mediador"]
-            pix = pix_db.get(mediador.id) if mediador else None
-
-            embed = discord.Embed(title="✅ Partida Confirmada", color=0x00ff00)
-            embed.add_field(name="Modo", value=dados["modo"], inline=False)
-            embed.add_field(name="Valor", value=f"R$ {formatar_valor(dados['valor'])}", inline=False)
-            embed.add_field(name="Jogadores", value=f"{dados['jogadores'][0].mention} x {dados['jogadores'][1].mention}", inline=False)
-            embed.add_field(name="Mediador", value=mediador.mention if mediador else "Nenhum", inline=False)
-
-            if pix:
-                embed.add_field(name="Chave Pix", value=pix["chave"], inline=False)
-                embed.set_image(url=pix["qrcode"])
-
-            await interaction.channel.send(embed=embed)
-
-        await interaction.response.defer()
-
-    @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.gray)
-    async def regras(self, interaction: discord.Interaction, button: Button):
-        await interaction.channel.send("📜 Combinem as regras no chat.")
-        await interaction.response.defer()
-
-# ================= COMANDO FILA =================
 @bot.command()
-async def fila(ctx, modo: str, valor_txt: str):
-    if not valor_txt.lower().startswith("valor:"):
-        return await ctx.send("Use: .fila 2v2 valor:2,50")
+async def pix(ctx):
+    if not tem_cargo(ctx.author, CARGO_MEDIADOR):
+        return
+    await ctx.send_modal(PixModal())
 
-    valor = float(valor_txt.replace("valor:", "").replace(",", "."))
-    filas[modo] = {"jogadores": [], "valor": valor}
-
-    embed = discord.Embed(title="Aguardando Jogadores", color=0x2ecc71)
-    embed.add_field(name="Modo", value=modo, inline=False)
-    embed.add_field(name="Valor", value=f"R$ {formatar_valor(valor)}", inline=False)
-    embed.add_field(name="Jogadores", value="Nenhum", inline=False)
-
-    await ctx.send(embed=embed, view=FilaView(modo))
-
-# ================= START =================
-TOKEN = os.getenv("TOKEN")
-bot.run(TOKEN)
+# ================= TOKEN =================
+bot.run("SEU_TOKEN_AQUI")
