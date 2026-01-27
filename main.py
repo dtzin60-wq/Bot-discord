@@ -17,6 +17,7 @@ pix_db = {}
 fila_mediadores = []
 filas = {}
 partidas = {}
+paineis_fila = {}  # evita spam
 
 def formatar_valor(v):
     return f"{v:.2f}".replace(".", ",")
@@ -57,9 +58,13 @@ class MediadorView(View):
         super().__init__(timeout=None)
 
     async def atualizar(self, interaction):
-        nomes = "\n".join(u.mention for u in fila_mediadores) or "Nenhum"
+        if fila_mediadores:
+            texto = "\n".join(f"{i+1}º - {u.mention}" for i, u in enumerate(fila_mediadores))
+        else:
+            texto = "Nenhum"
+
         embed = discord.Embed(title="Fila de Mediadores", color=0xffaa00)
-        embed.add_field(name="Mediadores", value=nomes)
+        embed.add_field(name="Ordem", value=texto)
         await interaction.message.edit(embed=embed, view=self)
 
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
@@ -84,8 +89,9 @@ class MediadorView(View):
 async def filamediador(ctx):
     if not tem_cargo(ctx.author, CARGO_PERMITIDO):
         return
+
     embed = discord.Embed(title="Fila de Mediadores", color=0xffaa00)
-    embed.add_field(name="Mediadores", value="Nenhum")
+    embed.add_field(name="Ordem", value="Nenhum")
     await ctx.send(embed=embed, view=MediadorView())
 
 # ================= FILA APOSTA =================
@@ -116,8 +122,6 @@ class FilaView(View):
             return await interaction.response.send_message("Fila cheia.", ephemeral=True)
 
         fila.append(interaction.user)
-
-        # 🔥 ATUALIZA EMBED QUANDO ENTRA O 2º JOGADOR
         await self.atualizar(interaction)
 
         if len(fila) == 2:
@@ -137,10 +141,11 @@ class FilaView(View):
         guild = interaction.guild
         jogadores = filas[self.modo]["jogadores"].copy()
         filas[self.modo]["jogadores"] = []
+        paineis_fila.pop(self.modo)
 
         canal = await guild.create_text_channel(f"partida-{self.modo}")
 
-        mediador = random.choice(fila_mediadores) if fila_mediadores else None
+        mediador = fila_mediadores.pop(0) if fila_mediadores else None
 
         partidas[canal.id] = {
             "jogadores": jogadores,
@@ -179,19 +184,19 @@ class ConfirmacaoView(View):
             embed.add_field(name="Modo", value=dados["modo"], inline=False)
             embed.add_field(name="Valor", value=f"R$ {formatar_valor(dados['valor'])}", inline=False)
             embed.add_field(name="Jogadores", value=f"{dados['jogadores'][0].mention} x {dados['jogadores'][1].mention}", inline=False)
-            embed.add_field(name="Mediador", value=mediador.mention if mediador else "Nenhum", inline=False)
 
-            if pix:
-                embed.add_field(name="Chave Pix", value=pix["chave"], inline=False)
-                embed.set_image(url=pix["qrcode"])
+            if mediador:
+                texto_mediador = mediador.mention
+                if pix:
+                    texto_mediador += f"\nPix: {pix['chave']}"
+                embed.add_field(name="Mediador", value=texto_mediador, inline=False)
+                if pix:
+                    embed.set_image(url=pix["qrcode"])
+            else:
+                embed.add_field(name="Mediador", value="Nenhum", inline=False)
 
             await interaction.channel.send(embed=embed)
 
-        await interaction.response.defer()
-
-    @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.gray)
-    async def regras(self, interaction: discord.Interaction, button: Button):
-        await interaction.channel.send("📜 Combinem as regras no chat.")
         await interaction.response.defer()
 
 # ================= COMANDO FILA =================
@@ -199,6 +204,9 @@ class ConfirmacaoView(View):
 async def fila(ctx, modo: str, valor_txt: str):
     if not tem_cargo(ctx.author, CARGO_PERMITIDO):
         return
+
+    if modo in paineis_fila:
+        return await ctx.send("❌ Já existe uma fila desse modo ativa.")
 
     valor = float(valor_txt.replace("valor:", "").replace(",", "."))
     filas[modo] = {"jogadores": [], "valor": valor}
@@ -208,7 +216,8 @@ async def fila(ctx, modo: str, valor_txt: str):
     embed.add_field(name="Valor", value=f"R$ {formatar_valor(valor)}", inline=False)
     embed.add_field(name="Jogadores", value="Nenhum", inline=False)
 
-    await ctx.send(embed=embed, view=FilaView(modo))
+    msg = await ctx.send(embed=embed, view=FilaView(modo))
+    paineis_fila[modo] = msg.id
 
 # ================= START =================
 TOKEN = os.getenv("TOKEN")
