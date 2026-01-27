@@ -1,25 +1,29 @@
 import discord
 from discord.ext import commands
+import os
 
-TOKEN = "COLOQUE_SEU_TOKEN_AQUI"
-
-PIX_ADM = "NÃO CADASTRADO"
+TOKEN = os.getenv("TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+PIX_ADM = "Não cadastrado"
+
 fila = {
-    "modo": "1v1",
-    "valor": 10,
-    "jogadores": []
+    "modo": "",
+    "valor": 0,
+    "jogadores": [],
+    "confirmados": []
 }
 
 @bot.event
 async def on_ready():
-    print(f"Bot ligado como {bot.user}")
+    print(f"Bot online: {bot.user}")
+    bot.add_view(PixView())
+    bot.add_view(FilaView())
 
-# ================= PAINEL PIX =================
+# ================== PAINEL PIX ==================
 
 class PixView(discord.ui.View):
     def __init__(self):
@@ -28,28 +32,29 @@ class PixView(discord.ui.View):
     @discord.ui.button(label="Cadastrar chave Pix", style=discord.ButtonStyle.green)
     async def cadastrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
-            "Use: `!cadastrarpix SUA_CHAVE`",
-            ephemeral=True
+            "Use: `!cadastrarpix SUA_CHAVE`", ephemeral=True
         )
 
     @discord.ui.button(label="Ver chave Pix", style=discord.ButtonStyle.blurple)
     async def ver(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
-            f"💰 Chave Pix: `{PIX_ADM}`",
-            ephemeral=True
+            f"💰 Chave Pix do ADM:\n`{PIX_ADM}`", ephemeral=True
         )
 
 @bot.command()
 async def painelpix(ctx):
-    await ctx.send("💰 **Cadastre sua chave Pix aqui**", view=PixView())
+    await ctx.send(
+        "💰 **Cadastrei sua chave Pix aqui**",
+        view=PixView()
+    )
 
 @bot.command()
 async def cadastrarpix(ctx, *, chave):
     global PIX_ADM
     PIX_ADM = chave
-    await ctx.send("✅ Chave Pix cadastrada com sucesso!")
+    await ctx.send("✅ Chave Pix cadastrada!")
 
-# ================= FILA =================
+# ================== FILA MEDIADOR ==================
 
 class FilaView(discord.ui.View):
     def __init__(self):
@@ -68,10 +73,10 @@ class FilaView(discord.ui.View):
             return
 
         fila["jogadores"].append(user)
-        await interaction.response.send_message(f"{user.mention} entrou na fila!")
+        await interaction.response.send_message(f"✅ {user.mention} entrou na fila!")
 
         if len(fila["jogadores"]) == 2:
-            await interaction.channel.purge(limit=50)
+            await interaction.channel.purge()
             await interaction.channel.send(
                 f"⚠️ **Aguardem o ADM chegar para pagar!**\n\n"
                 f"**Modo:** {fila['modo']}\n"
@@ -81,7 +86,7 @@ class FilaView(discord.ui.View):
             )
 
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red)
-    async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def sair(self, interaction: discord.Interation, button: discord.ui.Button):
         user = interaction.user
         if user in fila["jogadores"]:
             fila["jogadores"].remove(user)
@@ -94,8 +99,28 @@ class ConfirmacaoView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
-    async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Você confirmou presença.")
+    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user = interaction.user
+
+        if user not in fila["jogadores"]:
+            await interaction.response.send_message("Você não é jogador.", ephemeral=True)
+            return
+
+        if user in fila["confirmados"]:
+            await interaction.response.send_message("Você já confirmou.", ephemeral=True)
+            return
+
+        fila["confirmados"].append(user)
+        await interaction.response.send_message("✅ Confirmado!")
+
+        if len(fila["confirmados"]) == 2:
+            await interaction.channel.purge()
+            await interaction.channel.send(
+                "💰 **PAGAMENTO PARA O ADM**\n\n"
+                f"**Chave Pix:**\n`{PIX_ADM}`"
+            )
+            fila["jogadores"].clear()
+            fila["confirmados"].clear()
 
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red)
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -110,6 +135,7 @@ async def painelfila(ctx, modo: str, valor: int):
     fila["modo"] = modo
     fila["valor"] = valor
     fila["jogadores"].clear()
+    fila["confirmados"].clear()
 
     await ctx.send(
         "🎮 **Fila Mediador**\nEntre na fila e seja chamado",
