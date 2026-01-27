@@ -3,13 +3,14 @@ from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
 import os
 import random
-import re
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix=".", intents=intents)
+
+NOME_CARGO_MEDIADOR = "Mediador"
 
 pix_db = {}
 fila_mediadores = []
@@ -49,16 +50,21 @@ class MediadorView(View):
 
     async def atualizar(self, interaction):
         nomes = "\n".join(u.mention for u in fila_mediadores) or "Nenhum"
-
         embed = discord.Embed(title="Fila de Mediadores", color=0xffaa00)
         embed.add_field(name="Mediadores", value=nomes)
-
         await interaction.message.edit(embed=embed, view=self)
 
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
     async def entrar(self, interaction: discord.Interaction, button: Button):
+        cargo = discord.utils.get(interaction.user.roles, name=NOME_CARGO_MEDIADOR)
+        if not cargo:
+            return await interaction.response.send_message(
+                "❌ Você não tem o cargo de Mediador.", ephemeral=True
+            )
+
         if interaction.user not in fila_mediadores:
             fila_mediadores.append(interaction.user)
+
         await self.atualizar(interaction)
         await interaction.response.defer()
 
