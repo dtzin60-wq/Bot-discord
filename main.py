@@ -34,7 +34,7 @@ class PixModal(Modal, title="Cadastrar chave Pix"):
         }
         await interaction.response.send_message("✅ Chave Pix cadastrada!", ephemeral=True)
 
-# ================= PAINEL PIX =================
+# ================= VIEW PIX =================
 class PixView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -54,7 +54,7 @@ class PixView(View):
             ephemeral=True
         )
 
-    @discord.ui.button(label="Ver chave Pix de mediadores", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="Ver chave Pix de outros mediadores", style=discord.ButtonStyle.red)
     async def ver_outros(self, interaction: discord.Interaction, button: Button):
         if not pix_db:
             return await interaction.response.send_message("❌ Nenhum Pix cadastrado.", ephemeral=True)
@@ -98,7 +98,7 @@ class TopicoView(View):
             if pix:
                 embed = discord.Embed(title="💰 PAGAMENTO", color=0x2ecc71)
                 embed.add_field(name="Mediador", value=mediador.mention, inline=False)
-                embed.add_field(name="Nome", value=pix["nome"], inline=False)
+                embed.add_field(name="Nome da conta", value=pix["nome"], inline=False)
                 embed.add_field(name="Chave Pix", value=pix["chave"], inline=False)
                 embed.add_field(name="QR Code", value=pix["qr"], inline=False)
                 await interaction.channel.send(embed=embed)
@@ -195,10 +195,10 @@ async def criar_topico(guild, j1, j2, modo, valor):
 @bot.command()
 async def canal(ctx, *canais: discord.TextChannel):
     if len(canais) < 3:
-        return await ctx.send("Use no mínimo 3 canais.")
+        return await ctx.send("❌ Use no mínimo 3 canais.")
     global CANAIS_TOPICO
     CANAIS_TOPICO = [c.id for c in canais]
-    await ctx.send("✅ Canais definidos!")
+    await ctx.send("✅ Canais definidos para criar tópicos!")
 
 @bot.command()
 async def fila(ctx, modo: str, valor_txt: str):
