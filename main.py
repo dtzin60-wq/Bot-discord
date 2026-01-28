@@ -45,6 +45,28 @@ fila_atendimento = []
 def formatar_real(valor):
     return f"{valor:.2f}".replace(".", ",")
 
+# ================= VIEWS DE AUXILIAR (MEDIADOR) =================
+
+class ViewAuxiliar(View):
+    def __init__(self, thread):
+        super().__init__(timeout=None)
+        self.thread = thread
+
+    @discord.ui.button(label="Dar vitória para jogador", style=discord.ButtonStyle.green)
+    async def vitoria(self, it, btn):
+        await it.response.send_message("🏆 O mediador declarou vitória para um dos jogadores! Partida encerrada.", color=0x00ff00)
+        await self.thread.edit(locked=True, archived=True)
+
+    @discord.ui.button(label="Finalizar aposta", style=discord.ButtonStyle.gray)
+    async def finalizar(self, it, btn):
+        await it.response.send_message("🏁 Aposta finalizada com sucesso pelo mediador.")
+        await self.thread.edit(locked=True, archived=True)
+
+    @discord.ui.button(label="Vitória por W.O", style=discord.ButtonStyle.red)
+    async def wo(self, it, btn):
+        await it.response.send_message("⚠️ Vitória declarada por W.O (Ausência do adversário).")
+        await self.thread.edit(locked=True, archived=True)
+
 # ================= VIEWS DO TÓPICO (DENTRO DA PARTIDA) =================
 
 class ViewPixMediador(View):
@@ -68,7 +90,7 @@ class ViewPixMediador(View):
         embed.add_field(name="👤 Nome da conta:", value=res[0], inline=False)
         embed.add_field(name="🔑 Chave Pix:", value=f"`{res[1]}`", inline=False)
         if res[2] and res[2].startswith("http"):
-            embed.set_image(url=res[2]) # Exibe a foto do QR Code
+            embed.set_image(url=res[2]) 
         embed.set_footer(text=f"Mediador: {interaction.user.display_name}")
         await interaction.channel.send(content="@everyone", embed=embed)
 
@@ -90,15 +112,14 @@ class ViewConfirmarPartida(View):
         await interaction.response.send_message(embed=embed_status)
 
         if len(dados["confirmados"]) == 2:
-            embed_ready = discord.Embed(title="💳 AGUARDANDO MEDIADOR", color=0xf1c40f, description="Ambos confirmaram! Clique abaixo para chamar um mediador disponível ou enviar o Pix.")
+            embed_ready = discord.Embed(title="💳 AGUARDANDO MEDIADOR", color=0xf1c40f, description="Ambos confirmaram! Chame um mediador ou aguarde o envio do Pix.")
             
             view = ViewPixMediador()
-            # Botão para chamar quem está na fila de atendimento
             btn_chamar = Button(label="Chamar Mediador da Fila", style=discord.ButtonStyle.gray, emoji="📢")
             async def chamar_callback(it: discord.Interaction):
-                if not fila_atendimento: return await it.response.send_message("⚠️ Não há mediadores na fila de atendimento agora.", ephemeral=True)
+                if not fila_atendimento: return await it.response.send_message("⚠️ Não há mediadores na fila de atendimento.", ephemeral=True)
                 mentions = " ".join([m.mention for m in fila_atendimento])
-                await it.channel.send(f"📢 **Chamando mediadores:** {mentions}\nUma nova partida precisa de mediação!")
+                await it.channel.send(f"📢 **Chamando mediadores:** {mentions}")
                 await it.response.send_message("Mediadores notificados!", ephemeral=True)
             
             btn_chamar.callback = chamar_callback
@@ -141,7 +162,7 @@ class ViewFilaPartida(View):
             partidas_ativas[thread.id] = {"jogadores": [p1[0], p2[0]], "confirmados": []}
 
             emb = discord.Embed(title="Aguardando Confirmações", color=0x2ecc71)
-            emb.add_field(name="👮 Mediador:", value="*Aguardando mediador assumir...*", inline=False) # Mediador acima
+            emb.add_field(name="👮 Mediador:", value="*Aguardando mediador assumir...*", inline=False)
             emb.add_field(name="👑 Modo:", value=f"1v1 | {submodo.title()}", inline=False)
             emb.add_field(name="💎 Valor:", value=f"R$ {formatar_real(self.valor)}", inline=False)
             emb.add_field(name="⚡ Jogadores:", value=f"{p1[0].mention}\n{p2[0].mention}", inline=False)
@@ -158,7 +179,19 @@ class ViewFilaPartida(View):
     @discord.ui.button(label="Gelo infinito", style=discord.ButtonStyle.gray)
     async def gelo_i(self, it, btn): await self.entrar(it, "gelo infinito")
 
-# ================= COMANDOS E SUPORTE =================
+# ================= COMANDOS =================
+
+@bot.command()
+async def aux(ctx):
+    cargo_id = puxar_config("cargo_mediador_id")
+    if not cargo_id or not any(r.id == int(cargo_id) for r in ctx.author.roles):
+        return await ctx.send("❌ Comando exclusivo para **Mediadores**.")
+    
+    if not isinstance(ctx.channel, discord.Thread):
+        return await ctx.send("❌ Este comando só funciona dentro de um tópico de partida.")
+
+    embed = discord.Embed(title="🛠️ PAINEL AUXILIAR", description="Ações rápidas para mediação da partida.", color=0x3498db)
+    await ctx.send(embed=embed, view=ViewAuxiliar(ctx.channel))
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -184,7 +217,7 @@ async def mediar(ctx):
                 await it.response.defer(); await self.atualizar_msg(it)
             else: await it.response.send_message("Não está na fila!", ephemeral=True)
 
-    emb = discord.Embed(title="🎧 SUPORTE", description="**Entre aqui e comece a ser atendido**\n\n**Fila atual:**\nVazio", color=0x2b2d31)
+    emb = discord.Embed(title="🎧 SUPORTE", description="**Entre aqui e comece a ser atendido**", color=0x2b2d31)
     await ctx.send(embed=emb, view=ViewSuporte())
 
 @bot.command()
@@ -195,7 +228,7 @@ async def canal(ctx):
         async def s(self, it, sel):
             salvar_config("canal_destino", sel.values[0].id)
             await it.response.send_message(f"✅ Canal definido: {sel.values[0].mention}", ephemeral=True)
-    await ctx.send("Selecione o canal:", view=CanalV())
+    await ctx.send("Selecione o canal para os tópicos:", view=CanalV())
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -216,7 +249,6 @@ async def fila(ctx, valor_txt: str):
         emb.set_image(url=BANNER_URL)
         emb.add_field(name="Modo", value="`1v1 MOBILE`", inline=False)
         emb.add_field(name="Valor da Partida", value=f"R$ {formatar_real(val)}", inline=False)
-        emb.add_field(name="Jogadores na Fila", value="Vazio", inline=False)
         await ctx.send(embed=emb, view=ViewFilaPartida(f"mob_{val}", val))
     except: await ctx.send("❌ Use: `.fila 10,00`")
 
@@ -225,7 +257,7 @@ async def pix(ctx):
     class PModal(Modal, title="Cadastro Pix"):
         n = TextInput(label="Nome")
         c = TextInput(label="Chave")
-        q = TextInput(label="Link do QR Code (Foto)", placeholder="https://link-da-imagem.jpg")
+        q = TextInput(label="Link da Foto do QR Code", placeholder="https://link.jpg")
         async def on_submit(self, it):
             conn = sqlite3.connect("dados.db"); cursor = conn.cursor()
             cursor.execute("INSERT OR REPLACE INTO pix VALUES (?,?,?,?)", (it.user.id, self.n.value, self.c.value, self.q.value))
@@ -240,4 +272,4 @@ async def on_ready():
     init_db(); print(f"✅ {bot.user} pronto!")
 
 bot.run(TOKEN)
-                                                           
+        
