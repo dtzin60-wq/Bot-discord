@@ -43,29 +43,6 @@ class PixView(View):
     async def cadastrar(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(PixModal())
 
-    @discord.ui.button(label="Ver minha chave Pix", style=discord.ButtonStyle.gray)
-    async def ver_minha(self, interaction: discord.Interaction, button: Button):
-        pix = pix_db.get(interaction.user.id)
-        if not pix:
-            return await interaction.response.send_message("❌ Você não cadastrou Pix.", ephemeral=True)
-
-        await interaction.response.send_message(
-            f"👤 Nome: {pix['nome']}\n💰 Chave: {pix['chave']}\n📷 QR: {pix['qr']}",
-            ephemeral=True
-        )
-
-    @discord.ui.button(label="Ver chave Pix de outros mediadores", style=discord.ButtonStyle.red)
-    async def ver_outros(self, interaction: discord.Interaction, button: Button):
-        if not pix_db:
-            return await interaction.response.send_message("❌ Nenhum Pix cadastrado.", ephemeral=True)
-
-        texto = ""
-        for uid, pix in pix_db.items():
-            user = bot.get_user(uid)
-            texto += f"{user} - {pix['chave']}\n"
-
-        await interaction.response.send_message(texto, ephemeral=True)
-
 # ================= MODAL REGRAS =================
 class RegrasModal(Modal, title="Combinar regras"):
     regras = TextInput(label="Digite as regras", style=discord.TextStyle.paragraph)
@@ -90,20 +67,6 @@ class TopicoView(View):
         if interaction.user not in dados["confirmados"]:
             dados["confirmados"].append(interaction.user)
             await interaction.channel.send(f"✅ {interaction.user.mention} confirmou.")
-
-        if len(dados["confirmados"]) == 2:
-            mediador = dados["mediador"]
-            pix = pix_db.get(mediador.id)
-
-            if pix:
-                embed = discord.Embed(title="💰 PAGAMENTO", color=0x2ecc71)
-                embed.add_field(name="Mediador", value=mediador.mention, inline=False)
-                embed.add_field(name="Nome da conta", value=pix["nome"], inline=False)
-                embed.add_field(name="Chave Pix", value=pix["chave"], inline=False)
-                embed.add_field(name="QR Code", value=pix["qr"], inline=False)
-                await interaction.channel.send(embed=embed)
-
-        await interaction.response.defer()
 
     @discord.ui.button(label="Recusar", style=discord.ButtonStyle.red)
     async def recusar(self, interaction: discord.Interaction, button: Button):
@@ -137,22 +100,26 @@ class FilaView(View):
     async def entrar(self, interaction, escolha):
         fila = filas[self.chave]
 
+        # não deixa entrar duas vezes
         if any(u.id == interaction.user.id for u, _ in fila):
-            return await interaction.response.send_message("Você já está na fila.", ephemeral=True)
+            return await interaction.response.send_message(
+                "Você já está na fila.", ephemeral=True
+            )
 
+        # adiciona mantendo ordem de chegada
         fila.append((interaction.user, escolha))
         await self.atualizar(interaction.message)
 
+        # só cria tópico se tiver 2 jogadores
         if len(fila) == 2:
             (j1, m1), (j2, m2) = fila
 
+            # ✅ só cria se escolherem o MESMO modo
             if m1 == m2:
                 await criar_topico(interaction.guild, j1, j2, m1, self.valor)
-                filas[self.chave].clear()
-                await self.atualizar(interaction.message)
-            else:
-                await interaction.message.channel.send("❌ Modos diferentes escolhidos. Fila resetada.")
-                filas[self.chave].clear()
+
+                # remove apenas esses dois
+                filas[self.chave] = []
                 await self.atualizar(interaction.message)
 
         await interaction.response.defer()
@@ -179,13 +146,9 @@ async def criar_topico(guild, j1, j2, modo, valor):
 
     thread = await canal.create_thread(name=f"partida - {formatar_valor(valor)}")
 
-    mediador = guild.me
-
     partidas[thread.id] = {
         "jogadores": [j1, j2],
-        "confirmados": [],
-        "valor": valor,
-        "mediador": mediador
+        "confirmados": []
     }
 
     embed = discord.Embed(title="⚔️ PARTIDA", color=0x3498db)
@@ -199,7 +162,7 @@ async def criar_topico(guild, j1, j2, modo, valor):
 @bot.command()
 async def canal(ctx, *canais: discord.TextChannel):
     if len(canais) < 1:
-        return await ctx.send("❌ Use: .canal #canal1 #canal2 #canal3")
+        return await ctx.send("❌ Use: .canal #canal1 #canal2")
 
     global CANAIS_TOPICO
     CANAIS_TOPICO = [c.id for c in canais]
