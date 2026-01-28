@@ -6,6 +6,8 @@ import os
 TOKEN = os.getenv("TOKEN")
 CARGO_AUTORIZADO = "Mediador"
 
+CANAIS_PERMITIDOS = [123456789012345678, 987654321098765432, 111111111111111111]
+
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents)
 
@@ -91,7 +93,7 @@ async def filamediador(ctx):
     embed.add_field(name="Ordem", value="Nenhum")
     await ctx.send(embed=embed, view=MediadorView())
 
-# ================= FILA APOSTA =================
+# ================= FILA =================
 class FilaView(View):
     def __init__(self, modo, valor, limite):
         super().__init__(timeout=None)
@@ -122,7 +124,7 @@ class FilaView(View):
         await self.atualizar(interaction)
 
         if len(fila) == self.limite:
-            await self.criar_canal(interaction)
+            await self.criar_topico(interaction)
 
         await interaction.response.defer()
 
@@ -134,16 +136,23 @@ class FilaView(View):
         await self.atualizar(interaction)
         await interaction.response.defer()
 
-    async def criar_canal(self, interaction):
-        guild = interaction.guild
+    async def criar_topico(self, interaction):
+        canal_base = interaction.channel
+
+        if canal_base.id not in CANAIS_PERMITIDOS:
+            return await interaction.followup.send("❌ Não posso criar tópico neste canal.", ephemeral=True)
+
         jogadores = filas[self.modo]["jogadores"].copy()
         filas[self.modo]["jogadores"].clear()
 
         mediador = fila_mediadores.pop(0) if fila_mediadores else None
 
-        canal = await guild.create_text_channel(f"partida-{self.modo}")
+        topico = await canal_base.create_thread(
+            name=f"partida-{formatar_valor(self.valor)}",
+            type=discord.ChannelType.public_thread
+        )
 
-        partidas[canal.id] = {
+        partidas[topico.id] = {
             "jogadores": jogadores,
             "valor": self.valor,
             "modo": self.modo,
@@ -155,10 +164,10 @@ class FilaView(View):
         embed = discord.Embed(title="Confirmação da Partida", color=0x3498db)
         embed.add_field(name="Modo", value=self.modo, inline=False)
         embed.add_field(name="Valor", value=f"R$ {formatar_valor(self.valor)}", inline=False)
-        embed.add_field(name="Jogadores", value=f"{jogadores[0].mention} x {jogadores[1].mention}", inline=False)
+        embed.add_field(name="Jogadores", value=" x ".join([j.mention for j in jogadores]), inline=False)
         embed.add_field(name="Mediador", value=mediador.mention if mediador else "Nenhum", inline=False)
 
-        await canal.send(embed=embed, view=ConfirmacaoView())
+        await topico.send(embed=embed, view=ConfirmacaoView())
 
 # ================= CONFIRMAÇÃO =================
 class ConfirmacaoView(View):
@@ -177,7 +186,8 @@ class ConfirmacaoView(View):
                 dados["valor"] += 0.10
                 dados["taxa_aplicada"] = True
 
-            await interaction.channel.edit(name=f"partida-{formatar_valor(dados['valor'])}")
+            novo_nome = f"partida-{formatar_valor(dados['valor'])}"
+            await interaction.channel.edit(name=novo_nome)
             await interaction.channel.purge()
 
             mediador = dados["mediador"]
@@ -186,7 +196,7 @@ class ConfirmacaoView(View):
             embed = discord.Embed(title="✅ Partida Confirmada", color=0x2ecc71)
             embed.add_field(name="Modo", value=dados["modo"], inline=False)
             embed.add_field(name="Valor", value=f"R$ {formatar_valor(dados['valor'])}", inline=False)
-            embed.add_field(name="Jogadores", value=f"{dados['jogadores'][0].mention} x {dados['jogadores'][1].mention}", inline=False)
+            embed.add_field(name="Jogadores", value=" x ".join([j.mention for j in dados["jogadores"]]), inline=False)
             embed.add_field(name="Mediador", value=mediador.mention if mediador else "Nenhum", inline=False)
 
             if pix:
