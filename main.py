@@ -16,13 +16,16 @@ VALOR_ATUAL = 5.00
 def formatar_valor(v):
     return f"{v:.2f}".replace(".", ",")
 
-class RegrasModal(Modal, title="Combinar Regras"):
+# ===== MODAL REGRAS =====
+class RegrasModal(Modal, title="Combinar regras"):
     regras = TextInput(label="Digite as regras", style=discord.TextStyle.paragraph)
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.channel.send(f"📜 **Regras combinadas:**\n{self.regras.value}")
-        await interaction.response.defer()
+        await interaction.response.send_message(
+            f"📜 **Regras combinadas:**\n{self.regras.value}"
+        )
 
+# ===== CONFIRMAÇÃO NO TÓPICO =====
 class ConfirmacaoView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -31,10 +34,10 @@ class ConfirmacaoView(View):
     async def confirmar(self, interaction: discord.Interaction, button: Button):
         dados = partidas.get(interaction.channel.id)
         if not dados:
-            return
+            return await interaction.response.send_message("❌ Partida inválida.", ephemeral=True)
 
         if interaction.user not in dados["jogadores"]:
-            return await interaction.response.send_message("❌ Você não está na partida.", ephemeral=True)
+            return await interaction.response.send_message("❌ Você não é jogador.", ephemeral=True)
 
         if interaction.user not in dados["confirmados"]:
             dados["confirmados"].append(interaction.user)
@@ -44,22 +47,22 @@ class ConfirmacaoView(View):
             await interaction.channel.edit(name=f"partida - {valor_formatado}")
             await interaction.channel.send("✅ Ambos confirmaram! Partida iniciada.")
 
-        await interaction.response.defer()
+        await interaction.response.send_message("✔️ Confirmação registrada.", ephemeral=True)
 
     @discord.ui.button(label="Recusar", style=discord.ButtonStyle.red)
     async def recusar(self, interaction: discord.Interaction, button: Button):
-        await interaction.channel.send("❌ Partida recusada.")
-        await interaction.response.defer()
+        await interaction.response.send_message("❌ Partida recusada.")
 
     @discord.ui.button(label="Combinar regras", style=discord.ButtonStyle.blurple)
     async def combinar(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(RegrasModal())
 
+# ===== FILA =====
 class FilaView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def atualizar(self, message):
+    async def atualizar(self, interaction):
         texto = ""
         for u, modo in fila:
             texto += f"{u.mention} - {modo}\n"
@@ -71,7 +74,7 @@ class FilaView(View):
         embed.add_field(name="Valor", value=f"R$ {formatar_valor(VALOR_ATUAL)}", inline=False)
         embed.add_field(name="Jogadores", value=texto, inline=False)
 
-        await message.edit(embed=embed, view=self)
+        await interaction.message.edit(embed=embed, view=self)
 
     @discord.ui.button(label="Gelo normal", style=discord.ButtonStyle.gray)
     async def gelo_normal(self, interaction: discord.Interaction, button: Button):
@@ -85,24 +88,25 @@ class FilaView(View):
     async def sair(self, interaction: discord.Interaction, button: Button):
         global fila
         fila = [x for x in fila if x[0] != interaction.user]
-        await self.atualizar(interaction.message)
-        await interaction.response.defer()
+        await self.atualizar(interaction)
+        await interaction.response.send_message("❌ Você saiu da fila.", ephemeral=True)
 
     async def entrar(self, interaction, modo):
         if any(u == interaction.user for u, _ in fila):
-            return await interaction.response.send_message("Você já está na fila.", ephemeral=True)
+            return await interaction.response.send_message("❌ Você já está na fila.", ephemeral=True)
 
         if len(fila) >= 2:
-            return await interaction.response.send_message("Fila cheia.", ephemeral=True)
+            return await interaction.response.send_message("❌ Fila cheia.", ephemeral=True)
 
         fila.append((interaction.user, modo))
-        await self.atualizar(interaction.message)
+        await self.atualizar(interaction)
 
         if len(fila) == 2:
             await criar_topico(interaction.guild)
 
-        await interaction.response.defer()
+        await interaction.response.send_message("✅ Entrou na fila.", ephemeral=True)
 
+# ===== CRIAR TÓPICO =====
 async def criar_topico(guild):
     global fila
     canal = bot.get_channel(CANAL_TOPICO)
@@ -125,13 +129,18 @@ async def criar_topico(guild):
         "valor": VALOR_ATUAL
     }
 
-    embed = discord.Embed(title="⚔️ PARTIDA", description="Conversem e confirmem", color=0x3498db)
+    embed = discord.Embed(
+        title="⚔️ PARTIDA",
+        description="Conversem e cliquem em confirmar.",
+        color=0x3498db
+    )
     embed.add_field(name="Modo", value=modo_texto, inline=False)
     embed.add_field(name="Valor", value=f"R$ {formatar_valor(VALOR_ATUAL)}", inline=False)
     embed.add_field(name="Jogadores", value=f"{j1.mention} x {j2.mention}", inline=False)
 
     await topico.send(embed=embed, view=ConfirmacaoView())
 
+# ===== COMANDOS =====
 @bot.command()
 async def canal(ctx):
     global CANAL_TOPICO
@@ -146,13 +155,5 @@ async def fila(ctx):
     embed.add_field(name="Jogadores", value="Nenhum", inline=False)
 
     await ctx.send(embed=embed, view=FilaView())
-
-@bot.command()
-async def url(ctx):
-    if not ctx.message.attachments:
-        return await ctx.send("❌ Envie uma imagem junto com o comando `.url`")
-
-    imagem = ctx.message.attachments[0]
-    await ctx.send(f"✅ URL da imagem:\n{imagem.url}")
 
 bot.run(TOKEN)
