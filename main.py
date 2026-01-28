@@ -145,8 +145,13 @@ class FilaView(View):
 
         if len(fila) == 2:
             (j1, m1), (j2, m2) = fila
+
             if m1 == m2:
                 await criar_topico(interaction.guild, j1, j2, m1, self.valor)
+                filas[self.chave].clear()
+                await self.atualizar(interaction.message)
+            else:
+                await interaction.message.channel.send("❌ Modos diferentes escolhidos. Fila resetada.")
                 filas[self.chave].clear()
                 await self.atualizar(interaction.message)
 
