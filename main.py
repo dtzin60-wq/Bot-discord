@@ -13,6 +13,7 @@ pix_db = {}
 fila_mediadores = []
 filas = {}
 partidas = {}
+mensagens_fila = {}
 
 # ================= UTIL =================
 def formatar_valor(v):
@@ -93,45 +94,57 @@ async def filamediador(ctx):
     embed.add_field(name="Ordem", value="Nenhum")
     await ctx.send(embed=embed, view=MediadorView())
 
-# ================= FILA DE APOSTA =================
+# ================= FILA APOSTA =================
 class FilaView(View):
-    def __init__(self, modo, valor, limite):
+    def __init__(self, modo):
         super().__init__(timeout=None)
         self.modo = modo
-        self.valor = valor
-        self.limite = limite
 
     async def atualizar(self, interaction):
-        fila = filas[self.modo]["jogadores"]
+        dados = filas[self.modo]
+        fila = dados["jogadores"]
+
         nomes = "\n".join(u.mention for u in fila) or "Nenhum"
+
         embed = discord.Embed(title="🎮 Fila de Aposta", color=0x2ecc71)
         embed.add_field(name="Modo", value=self.modo, inline=False)
-        embed.add_field(name="Valor", value=f"R$ {formatar_valor(self.valor)}", inline=False)
+        embed.add_field(name="Valor", value=f"R$ {formatar_valor(dados['valor'])}", inline=False)
         embed.add_field(name="Jogadores", value=nomes, inline=False)
+
         await interaction.message.edit(embed=embed, view=self)
 
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
     async def entrar(self, interaction: discord.Interaction, button: Button):
-        fila = filas[self.modo]["jogadores"]
+        dados = filas[self.modo]
+        fila = dados["jogadores"]
 
         if interaction.user in fila:
             return await interaction.response.send_message("Você já está na fila.", ephemeral=True)
 
-        if len(fila) >= self.limite:
-            return await interaction.response.send_message("Fila cheia.", ephemeral=True)
-
         fila.append(interaction.user)
         await self.atualizar(interaction)
 
-        if len(fila) == self.limite:
+        if len(fila) == dados["limite"]:
             await self.criar_canal(interaction)
+
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Sair", style=discord.ButtonStyle.red)
+    async def sair(self, interaction: discord.Interaction, button: Button):
+        dados = filas[self.modo]
+        fila = dados["jogadores"]
+
+        if interaction.user in fila:
+            fila.remove(interaction.user)
+            await self.atualizar(interaction)
 
         await interaction.response.defer()
 
     async def criar_canal(self, interaction):
         guild = interaction.guild
-        jogadores = filas[self.modo]["jogadores"].copy()
-        filas[self.modo]["jogadores"].clear()
+        dados = filas[self.modo]
+        jogadores = dados["jogadores"].copy()
+        dados["jogadores"].clear()
 
         mediador = fila_mediadores.pop(0) if fila_mediadores else None
 
@@ -139,7 +152,7 @@ class FilaView(View):
 
         partidas[canal.id] = {
             "jogadores": jogadores,
-            "valor": self.valor,
+            "valor": dados["valor"],
             "modo": self.modo,
             "mediador": mediador,
             "confirmados": []
@@ -147,7 +160,7 @@ class FilaView(View):
 
         embed = discord.Embed(title="Confirmação da Partida", color=0x3498db)
         embed.add_field(name="Modo", value=self.modo, inline=False)
-        embed.add_field(name="Valor", value=f"R$ {formatar_valor(self.valor)}", inline=False)
+        embed.add_field(name="Valor", value=f"R$ {formatar_valor(dados['valor'])}", inline=False)
         embed.add_field(name="Jogadores", value=" x ".join(j.mention for j in jogadores), inline=False)
         embed.add_field(name="Mediador", value=mediador.mention if mediador else "Nenhum", inline=False)
 
@@ -166,8 +179,8 @@ class ConfirmacaoView(View):
 
         if len(dados["confirmados"]) == 2:
             await interaction.channel.purge()
-
             valor = dados["valor"]
+
             await interaction.channel.edit(name=f"partida-{formatar_valor(valor)}")
 
             mediador = dados["mediador"]
@@ -187,11 +200,6 @@ class ConfirmacaoView(View):
 
         await interaction.response.defer()
 
-    @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.gray)
-    async def regras(self, interaction: discord.Interaction, button: Button):
-        await interaction.channel.send("📜 Combinem as regras no chat.")
-        await interaction.response.defer()
-
 # ================= COMANDO FILA =================
 @bot.command()
 async def fila(ctx, modo: str, valor_txt: str):
@@ -200,21 +208,29 @@ async def fila(ctx, modo: str, valor_txt: str):
 
     limite = validar_modo(modo)
     if not limite:
-        return await ctx.send("❌ Use apenas 1v1, 2v2, 3v3 ou 4v4.")
-
-    if not valor_txt.lower().startswith("valor:"):
-        return await ctx.send("Use: .fila 2v2 valor:10,00")
+        return await ctx.send("❌ Use apenas 1v1 até 4v4.")
 
     valor = float(valor_txt.replace("valor:", "").replace(",", "."))
 
-    filas[modo] = {"jogadores": []}
+    if modo in mensagens_fila:
+        try:
+            await mensagens_fila[modo].delete()
+        except:
+            pass
+
+    filas[modo] = {
+        "jogadores": [],
+        "valor": valor,
+        "limite": limite
+    }
 
     embed = discord.Embed(title="🎮 Fila de Aposta", color=0x2ecc71)
     embed.add_field(name="Modo", value=modo, inline=False)
     embed.add_field(name="Valor", value=f"R$ {formatar_valor(valor)}", inline=False)
     embed.add_field(name="Jogadores", value="Nenhum", inline=False)
 
-    await ctx.send(embed=embed, view=FilaView(modo, valor, limite))
+    msg = await ctx.send(embed=embed, view=FilaView(modo))
+    mensagens_fila[modo] = msg
 
 # ================= START =================
 bot.run(TOKEN)
