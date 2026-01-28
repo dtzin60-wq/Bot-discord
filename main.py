@@ -1,201 +1,219 @@
 import discord
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
-import json
+import sqlite3
 import os
 
-# Configurações de Ambiente (Railway usa variáveis de ambiente)
-TOKEN = os.getenv("DISCORD_TOKEN")
+# ================= CONFIGURAÇÕES =================
+TOKEN = os.getenv("DISCORD_TOKEN") # Variável de ambiente na Railway
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-# --- Banco de Dados em JSON ---
-def carregar_pix():
-    if os.path.exists("pix_db.json"):
-        with open("pix_db.json", "r") as f:
-            return json.load(f)
-    return {}
+# ================= BANCO DE DADOS (SQLite) =================
+def init_db():
+    conn = sqlite3.connect("dados.db")
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS pix 
+                      (user_id INTEGER PRIMARY KEY, nome TEXT, chave TEXT, qr TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS config 
+                      (chave TEXT PRIMARY KEY, valor INTEGER)''')
+    conn.commit()
+    conn.close()
 
-def salvar_pix(dados):
-    with open("pix_db.json", "w") as f:
-        json.dump(dados, f, indent=4)
+def salvar_pix(user_id, nome, chave, qr):
+    conn = sqlite3.connect("dados.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO pix VALUES (?, ?, ?, ?)", (user_id, nome, chave, qr))
+    conn.commit()
+    conn.close()
 
-# Variáveis globais
+def puxar_pix(user_id):
+    conn = sqlite3.connect("dados.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT nome, chave, qr FROM pix WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return {"nome": res[0], "chave": res[1], "qr": res[2]} if res else None
+
+def salvar_canal(id_canal):
+    conn = sqlite3.connect("dados.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO config VALUES ('canal_destino', ?)", (id_canal,))
+    conn.commit()
+    conn.close()
+
+def puxar_canal():
+    conn = sqlite3.connect("dados.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT valor FROM config WHERE chave = 'canal_destino'")
+    res = cursor.fetchone()
+    conn.close()
+    return res[0] if res else None
+
+# Variáveis em memória
 filas = {}
-pix_db = carregar_pix()
 partidas = {}
-CANAIS_TOPICO = []
-canal_index = 0
 
-# ================= PIX =================
+def formatar_real(valor):
+    return f"{valor:.2f}".replace(".", ",")
+
+# ================= INTERFACES (MODALS/VIEWS) =================
+
 class PixModal(Modal, title="Cadastrar Pix"):
-    nome = TextInput(label="Nome")
+    nome = TextInput(label="Nome da Conta")
     chave = TextInput(label="Chave Pix")
-    qr = TextInput(label="Link QR Code", required=False)
+    qr = TextInput(label="Link do QR Code (Opcional)", required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Transforma o ID em string para o JSON aceitar
-        pix_db[str(interaction.user.id)] = {
-            "nome": self.nome.value,
-            "chave": self.chave.value,
-            "qr": self.qr.value or "Não informado"
-        }
-        salvar_pix(pix_db)
-        await interaction.response.send_message("✅ Pix cadastrado e salvo!", ephemeral=True)
+        salvar_pix(interaction.user.id, self.nome.value, self.chave.value, self.qr.value or "Não informado")
+        await interaction.response.send_message("✅ Pix salvo permanentemente!", ephemeral=True)
 
-class PixView(View):
+class AtendimentoView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Cadastrar Pix", style=discord.ButtonStyle.green)
-    async def cadastrar(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(PixModal())
+    @discord.ui.button(label="Confirmar Atendimento", style=discord.ButtonStyle.green, emoji="✅")
+    async def confirmar_atendimento(self, interaction: discord.Interaction, button: Button):
+        pix = puxar_pix(interaction.user.id)
+        if not pix:
+            return await interaction.response.send_message("❌ Cadastre seu Pix primeiro!", ephemeral=True)
 
-# ================= TÓPICO =================
-class TopicoView(View):
-    def __init__(self, thread_id):
+        await interaction.channel.purge(limit=100)
+        embed = discord.Embed(title="🏦 DADOS PARA PAGAMENTO (MEDIADOR)", color=0x2ecc71)
+        embed.add_field(name="👤 Nome da conta do Pix do mediador:", value=pix['nome'], inline=False)
+        embed.add_field(name="🔑 Chave Pix do mediador:", value=f"`{pix['chave']}`", inline=False)
+        embed.add_field(name="🖼️ QR code do mediador:", value=pix['qr'], inline=False)
+        embed.set_footer(text=f"Atendido por: {interaction.user.display_name}")
+        await interaction.channel.send(embed=embed)
+
+class MediadorView(View):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.thread_id = thread_id
 
-    @discord.ui.button(label="Confirmar Pagamento", style=discord.ButtonStyle.green)
-    async def confirmar(self, interaction: discord.Interaction, button: Button):
-        if self.thread_id not in partidas:
-            return await interaction.response.send_message("❌ Partida expirada.", ephemeral=True)
+    @discord.ui.button(label="Entre para ser atendido", style=discord.ButtonStyle.blurple, emoji="👮")
+    async def entrar_mediador(self, interaction: discord.Interaction, button: Button):
+        id_canal = puxar_canal()
+        if not id_canal: return await interaction.response.send_message("❌ ADM não usou .canal", ephemeral=True)
+        
+        canal = bot.get_channel(id_canal)
+        thread = await canal.create_thread(name=f"🆘-atendimento-{interaction.user.name}", type=discord.ChannelType.public_thread)
+        
+        embed = discord.Embed(title="🚀 NOVO ATENDIMENTO", color=0xe74c3c)
+        embed.add_field(name="🎮 Modo", value="A definir", inline=True)
+        embed.add_field(name="👮 Mediador", value="Aguardando...", inline=True)
+        embed.add_field(name="💰 Valor", value="A definir", inline=True)
+        embed.add_field(name="👥 Jogadores", value=f"{interaction.user.mention}", inline=False)
+        
+        await thread.send(content=f"{interaction.user.mention} | @here", embed=embed, view=AtendimentoView())
+        await interaction.response.send_message(f"✅ Tópico: {thread.mention}", ephemeral=True)
 
-        dados = partidas[self.thread_id]
-        if interaction.user not in dados["jogadores"]:
-            return await interaction.response.send_message("❌ Você não está nesta partida.", ephemeral=True)
-
-        if interaction.user in dados["confirmados"]:
-            return await interaction.response.send_message("⚠️ Você já confirmou.", ephemeral=True)
-
-        dados["confirmados"].append(interaction.user)
-        await interaction.response.send_message(f"✅ {interaction.user.mention} confirmou!")
-
-        if len(dados["confirmados"]) == 2:
-            j1, j2 = dados["jogadores"]
-            p1 = pix_db.get(str(j1.id))
-            p2 = pix_db.get(str(j2.id))
-
-            embed = discord.Embed(title="💰 DADOS DE PAGAMENTO", color=0x2ecc71)
-            for j, p in [(j1, p1), (j2, p2)]:
-                val = f"**Nome:** {p['nome']}\n**Chave:** `{p['chave']}`\n**QR:** {p['qr']}" if p else "❌ Pix não cadastrado"
-                embed.add_field(name=f"Pix de {j.display_name}", value=val, inline=False)
-            
-            await interaction.channel.send(embed=embed)
-
-# ================= FILA =================
 class FilaView(View):
     def __init__(self, chave, modo, valor):
         super().__init__(timeout=None)
-        self.chave = chave
-        self.valor = valor
+        self.chave, self.modo, self.valor = chave, modo, valor
 
-    async def atualizar(self, interaction):
+    async def atualizar(self, message):
         fila = filas.get(self.chave, [])
-        texto = "\n".join([f"{u.mention} - `{m}`" for u, m in fila]) if fila else "Nenhum"
-        
+        texto = "\n".join([f"{u.mention} - `{m}`" for u, m in fila]) if fila else "Vazio"
         embed = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71)
         embed.set_image(url=BANNER_URL)
-        embed.add_field(name="Valor", value=f"R$ {self.valor:.2f}".replace(".", ","), inline=False)
-        embed.add_field(name="Jogadores na Fila", value=texto, inline=False)
-        await interaction.response.edit_message(embed=embed, view=self)
+        embed.add_field(name="Valor", value=f"R$ {formatar_real(self.valor)}", inline=False)
+        embed.add_field(name="Jogadores", value=texto, inline=False)
+        await message.edit(embed=embed, view=self)
 
     async def entrar(self, interaction, modo_escolhido):
-        if self.chave not in filas: filas[self.chave] = []
-        fila = filas[self.chave]
-
-        if any(u.id == interaction.user.id for u, _ in fila):
-            return await interaction.response.send_message("❌ Você já está na fila.", ephemeral=True)
-
-        fila.append((interaction.user, modo_escolhido))
+        id_canal = puxar_canal()
+        if not id_canal: return await interaction.response.send_message("❌ ADM não usou .canal", ephemeral=True)
         
-        # Match do mesmo modo
-        match = [item for item in fila if item[1] == modo_escolhido]
+        if self.chave not in filas: filas[self.chave] = []
+        if any(u.id == interaction.user.id for u, _ in filas[self.chave]):
+            return await interaction.response.send_message("❌ Já está na fila!", ephemeral=True)
+
+        filas[self.chave].append((interaction.user, modo_escolhido))
+        match = [i for i in filas[self.chave] if i[1] == modo_escolhido]
 
         if len(match) >= 2:
             p1, p2 = match[0], match[1]
-            filas[self.chave].remove(p1)
-            filas[self.chave].remove(p2)
+            filas[self.chave].remove(p1); filas[self.chave].remove(p2)
             
-            await criar_topico(interaction.guild, p1[0], p2[0], modo_escolhido, self.valor)
-            await interaction.response.send_message(f"⚔️ Match encontrado: {modo_escolhido}!", ephemeral=True)
+            canal = bot.get_channel(id_canal)
+            thread = await canal.create_thread(name=f"⚔️-{formatar_real(self.valor)}-{modo_escolhido}", type=discord.ChannelType.public_thread)
+            partidas[thread.id] = {"jogadores": [p1[0], p2[0]], "confirmados": []}
             
-            # Atualiza a mensagem original da fila
-            texto = "\n".join([f"{u.mention} - `{m}`" for u, m in filas[self.chave]]) if filas[self.chave] else "Nenhum"
-            embed = interaction.message.embeds[0]
-            embed.set_field_at(1, name="Jogadores na Fila", value=texto, inline=False)
-            await interaction.message.edit(embed=embed, view=self)
+            embed = discord.Embed(title="⚔️ PARTIDA", color=0x3498db)
+            embed.add_field(name="Modo", value=modo_escolhido.upper(), inline=True)
+            embed.add_field(name="Valor", value=f"R$ {formatar_real(self.valor)}", inline=True)
+            embed.add_field(name="Jogadores", value=f"{p1[0].mention} vs {p2[0].mention}", inline=False)
+            
+            # Reutilizando a lógica de confirmação direta
+            class ConfirmaPartida(View):
+                def __init__(self, tid): super().__init__(timeout=None); self.tid = tid
+                @discord.ui.button(label="Confirmar Pagamento", style=discord.ButtonStyle.green)
+                async def confirmar(self, inter: discord.Interaction, but: Button):
+                    d = partidas.get(self.tid)
+                    if inter.user not in d["jogadores"]: return
+                    if inter.user in d["confirmados"]: return
+                    d["confirmados"].append(inter.user)
+                    await inter.response.send_message(f"✅ {inter.user.mention} confirmou!")
+                    if len(d["confirmados"]) == 2:
+                        pix1, pix2 = puxar_pix(d["jogadores"][0].id), puxar_pix(d["jogadores"][1].id)
+                        eb = discord.Embed(title="💰 PAGAMENTO", color=0x2ecc71)
+                        for u, p in zip(d["jogadores"], [pix1, pix2]):
+                            info = f"**Nome:** {p['nome']}\n**Chave:** `{p['chave']}`" if p else "❌ Sem Pix"
+                            eb.add_field(name=u.name, value=info, inline=False)
+                        await inter.channel.send(embed=eb)
+
+            await thread.send(content=f"{p1[0].mention} {p2[0].mention}", embed=embed, view=ConfirmaPartida(thread.id))
+            await interaction.response.send_message("⚔️ Match Formado!", ephemeral=True)
+            await self.atualizar(interaction.message)
         else:
-            await self.atualizar(interaction)
+            await interaction.response.defer(); await self.atualizar(interaction.message)
 
     @discord.ui.button(label="Gelo normal", style=discord.ButtonStyle.gray)
-    async def gelo_normal(self, interaction: discord.Interaction, button: Button):
-        await self.entrar(interaction, "gelo normal")
-
+    async def gelo_normal(self, interaction, button): await self.entrar(interaction, "gelo normal")
     @discord.ui.button(label="Gelo infinito", style=discord.ButtonStyle.gray)
-    async def gelo_infinito(self, interaction: discord.Interaction, button: Button):
-        await self.entrar(interaction, "gelo infinito")
-
+    async def gelo_infinito(self, interaction, button): await self.entrar(interaction, "gelo infinito")
     @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.red)
-    async def sair(self, interaction: discord.Interaction, button: Button):
-        if self.chave in filas:
-            filas[self.chave] = [x for x in filas[self.chave] if x[0].id != interaction.user.id]
-        await self.atualizar(interaction)
-
-# ================= CRIAR TÓPICO =================
-async def criar_topico(guild, j1, j2, modo, valor):
-    global canal_index
-    if not CANAIS_TOPICO: return
-    
-    id_canal = CANAIS_TOPICO[canal_index]
-    canal = bot.get_channel(id_canal)
-    canal_index = (canal_index + 1) % len(CANAIS_TOPICO)
-
-    thread = await canal.create_thread(name=f"⚔️-{valor}-{modo}")
-    partidas[thread.id] = {"jogadores": [j1, j2], "confirmados": []}
-
-    embed = discord.Embed(title="⚔️ PARTIDA INICIADA", color=0x3498db)
-    embed.add_field(name="Modo", value=modo.upper(), inline=True)
-    embed.add_field(name="Valor", value=f"R$ {valor:.2f}", inline=True)
-    embed.add_field(name="Confronto", value=f"{j1.mention} VS {j2.mention}", inline=False)
-    
-    await thread.send(content=f"{j1.mention} {j2.mention}", embed=embed, view=TopicoView(thread.id))
+    async def sair(self, interaction, button):
+        filas[self.chave] = [x for x in filas.get(self.chave, []) if x[0].id != interaction.user.id]
+        await interaction.response.defer(); await self.atualizar(interaction.message)
 
 # ================= COMANDOS =================
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def canal(ctx, *canais: discord.TextChannel):
-    global CANAIS_TOPICO
-    CANAIS_TOPICO = [c.id for c in canais]
-    await ctx.send(f"✅ Canais de tópicos configurados!")
+async def canal(ctx, canal_selecionado: discord.TextChannel):
+    salvar_canal(canal_selecionado.id)
+    await ctx.send(f"✅ Canal salvo: {canal_selecionado.mention}")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def fila(ctx, modo: str, valor_txt: str):
     try:
         valor = float(valor_txt.replace(",", "."))
-        chave = f"{modo}_{valor}"
-        filas[chave] = []
-        embed = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71)
-        embed.set_image(url=BANNER_URL)
-        embed.add_field(name="Modo", value=modo, inline=False)
-        embed.add_field(name="Valor", value=f"R$ {valor:.2f}", inline=False)
-        embed.add_field(name="Fila", value="Vazia", inline=False)
-        await ctx.send(embed=embed, view=FilaView(chave, modo, valor))
-    except:
-        await ctx.send("Formato inválido. Use: `.fila 1v1 10.00`")
+        await ctx.send(embed=discord.Embed(title="🎮 WS APOSTAS", description=f"Valor: R$ {formatar_real(valor)}"), view=FilaView(f"{modo}_{valor}", modo, valor))
+    except: await ctx.send("❌ Erro no valor.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def painel_mediador(ctx):
+    await ctx.send(embed=discord.Embed(title="⚠️ ENTRE PRA SER ATENDIDO", color=0xe74c3c), view=MediadorView())
 
 @bot.command()
 async def pix(ctx):
-    await ctx.send("Gerencie seu Pix abaixo:", view=PixView())
+    await ctx.send("Cadastre seu Pix:", view=View().add_item(Button(label="Cadastrar", style=discord.ButtonStyle.green, custom_id="reg_pix")))
+
+@bot.event
+async def on_interaction(interaction):
+    if interaction.type == discord.InteractionType.component and interaction.data.get("custom_id") == "reg_pix":
+        await interaction.response.send_modal(PixModal())
 
 @bot.event
 async def on_ready():
-    print(f"✅ Bot online: {bot.user}")
+    init_db()
+    print(f"✅ {bot.user} Online!")
 
 bot.run(TOKEN)
-                                                            
+    
