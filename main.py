@@ -3,132 +3,107 @@ from discord.ext import commands
 from discord.ui import View, Button
 import os
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = "SEU_TOKEN_AQUI"
 
-intents = discord.Intents.all()
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-# ====== CONFIG ======
-CANAL_TOPICO = None
-BANNER_URL = "https://i.imgur.com/7QK4H6y.png"  # troque se quiser
+filas = {}
 
-filas = {}  # modo -> [(user, gelo)]
-partidas = {}
+BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg?ex=697aef4c&is=69799dcc&hm=b523772cd5b4467e3fedbab7f725c3a84a8c59fb63cfb99cd81747face0c5ccd&"
 
-# ===== UTIL =====
 def formatar_valor(v):
     return f"{v:.2f}".replace(".", ",")
 
-# ===== VIEW DA FILA =====
 class FilaView(View):
     def __init__(self, modo, valor):
         super().__init__(timeout=None)
         self.modo = modo
         self.valor = valor
+        self.jogadores = []
+        self.confirmados = []
 
-    async def atualizar(self, message):
-        fila = filas[self.modo]
-        texto = ""
-        for u, gelo in fila:
-            texto += f"{u.mention} - {gelo}\n"
-        if not texto:
-            texto = "Nenhum"
-
-        embed = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71)
+    async def atualizar_embed(self, interaction):
+        embed = discord.Embed(title=f"{self.modo} SPACE APOSTAS", color=0x2b2d31)
         embed.set_image(url=BANNER_URL)
-        embed.add_field(name="Modo", value=self.modo, inline=False)
-        embed.add_field(name="Valor", value=f"R$ {formatar_valor(self.valor)}", inline=False)
-        embed.add_field(name="Jogadores", value=texto, inline=False)
+        embed.add_field(name="👑 Modo", value=self.modo, inline=False)
+        embed.add_field(name="💰 Valor", value=f"R$ {formatar_valor(self.valor)}", inline=False)
 
-        await message.edit(embed=embed, view=self)
+        if self.jogadores:
+            nomes = "\n".join([j.mention for j in self.jogadores])
+        else:
+            nomes = "Nenhum jogador na fila"
 
-    async def entrar(self, interaction, gelo):
-        fila = filas[self.modo]
+        embed.add_field(name="⚡ Jogadores", value=nomes, inline=False)
+        await interaction.message.edit(embed=embed, view=self)
 
-        if any(u == interaction.user for u, _ in fila):
-            return await interaction.response.send_message("Você já está na fila.", ephemeral=True)
+    @Button(label="Gel Normal", style=discord.ButtonStyle.secondary)
+    async def gel_normal(self, interaction: discord.Interaction, button: Button):
+        if interaction.user not in self.jogadores:
+            self.jogadores.append(interaction.user)
+            await self.atualizar_embed(interaction)
+            await interaction.response.send_message("Você entrou na fila (Gel Normal).", ephemeral=True)
+        else:
+            await interaction.response.send_message("Você já está na fila.", ephemeral=True)
 
-        if len(fila) >= 2:
-            return await interaction.response.send_message("Fila cheia.", ephemeral=True)
+    @Button(label="Gel Infinito", style=discord.ButtonStyle.secondary)
+    async def gel_infinito(self, interaction: discord.Interaction, button: Button):
+        if interaction.user not in self.jogadores:
+            self.jogadores.append(interaction.user)
+            await self.atualizar_embed(interaction)
+            await interaction.response.send_message("Você entrou na fila (Gel Infinito).", ephemeral=True)
+        else:
+            await interaction.response.send_message("Você já está na fila.", ephemeral=True)
 
-        fila.append((interaction.user, gelo))
-        await self.atualizar(interaction.message)
+    @Button(label="Confirmar", style=discord.ButtonStyle.success)
+    async def confirmar(self, interaction: discord.Interaction, button: Button):
+        if interaction.user not in self.jogadores:
+            await interaction.response.send_message("Entre na fila primeiro.", ephemeral=True)
+            return
 
-        # só cria se os dois escolherem o mesmo gelo
-        if len(fila) == 2:
-            (_, g1), (_, g2) = fila
-            if g1 == g2:
-                await criar_topico(self.modo, self.valor)
+        if interaction.user not in self.confirmados:
+            self.confirmados.append(interaction.user)
 
-        await interaction.response.defer()
+        if len(self.confirmados) == 2:
+            canal = interaction.channel
+            await canal.edit(topic=f"partida - {formatar_valor(self.valor)}")
+            await interaction.response.send_message("Partida confirmada! 🎮", ephemeral=False)
+        else:
+            await interaction.response.send_message("Confirmação registrada. Aguardando outro jogador.", ephemeral=True)
 
-    @discord.ui.button(label="Gelo infinito", style=discord.ButtonStyle.gray)
-    async def gelo_infinito(self, interaction: discord.Interaction, button: Button):
-        await self.entrar(interaction, "Gelo infinito")
-
-    @discord.ui.button(label="Gelo normal", style=discord.ButtonStyle.gray)
-    async def gelo_normal(self, interaction: discord.Interaction, button: Button):
-        await self.entrar(interaction, "Gelo normal")
-
-    @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.red)
+    @Button(label="Sair da fila", style=discord.ButtonStyle.danger)
     async def sair(self, interaction: discord.Interaction, button: Button):
-        filas[self.modo] = [x for x in filas[self.modo] if x[0] != interaction.user]
-        await self.atualizar(interaction.message)
-        await interaction.response.defer()
+        if interaction.user in self.jogadores:
+            self.jogadores.remove(interaction.user)
+            if interaction.user in self.confirmados:
+                self.confirmados.remove(interaction.user)
+            await self.atualizar_embed(interaction)
+            await interaction.response.send_message("Você saiu da fila.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Você não está na fila.", ephemeral=True)
 
-# ===== CRIAR TÓPICO =====
-async def criar_topico(modo, valor):
-    global filas
-
-    canal = bot.get_channel(CANAL_TOPICO)
-    if not canal:
+@bot.command()
+async def fila(ctx, modo: str, *, valor: str):
+    if "valor:" not in valor:
+        await ctx.send("Use assim: `.fila 1v1 valor:10`")
         return
 
-    jogadores = filas[modo].copy()
-    filas[modo].clear()
+    try:
+        valor_num = float(valor.replace("valor:", "").replace(",", "."))
+    except:
+        await ctx.send("Valor inválido.")
+        return
 
-    nome = f"partida-{formatar_valor(valor)}"
-
-    topico = await canal.create_thread(
-        name=nome,
-        type=discord.ChannelType.public_thread
-    )
-
-    embed = discord.Embed(title="⚔️ PARTIDA CRIADA", color=0x3498db)
-    embed.add_field(name="Modo", value=modo, inline=False)
-    embed.add_field(name="Valor", value=f"R$ {formatar_valor(valor)}", inline=False)
-    embed.add_field(
-        name="Jogadores",
-        value=f"{jogadores[0][0].mention} x {jogadores[1][0].mention}",
-        inline=False
-    )
-
-    await topico.send(embed=embed)
-
-# ===== COMANDO FILA =====
-@bot.command()
-async def fila(ctx, modo: str, valor_txt: str):
-    if not valor_txt.lower().startswith("valor:"):
-        return await ctx.send("Use: `.fila 1v1 valor:10`")
-
-    valor = float(valor_txt.replace("valor:", "").replace(",", "."))
-
-    filas[modo] = []
-
-    embed = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71)
+    embed = discord.Embed(title=f"{modo} SPACE APOSTAS", color=0x2b2d31)
     embed.set_image(url=BANNER_URL)
-    embed.add_field(name="Modo", value=modo, inline=False)
-    embed.add_field(name="Valor", value=f"R$ {formatar_valor(valor)}", inline=False)
-    embed.add_field(name="Jogadores", value="Nenhum", inline=False)
+    embed.add_field(name="👑 Modo", value=modo, inline=False)
+    embed.add_field(name="💰 Valor", value=f"R$ {formatar_valor(valor_num)}", inline=False)
+    embed.add_field(name="⚡ Jogadores", value="Nenhum jogador na fila", inline=False)
 
-    await ctx.send(embed=embed, view=FilaView(modo, valor))
+    view = FilaView(modo, valor_num)
+    await ctx.send(embed=embed, view=view)
 
-# ===== DEFINIR CANAL DOS TÓPICOS =====
-@bot.command()
-async def canal(ctx):
-    global CANAL_TOPICO
-    CANAL_TOPICO = ctx.channel.id
-    await ctx.send("✅ Este canal agora cria os tópicos das partidas.")
-
-# ===== START =====
 bot.run(TOKEN)
