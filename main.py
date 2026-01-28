@@ -8,74 +8,53 @@ TOKEN = os.getenv("TOKEN")
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-CANAL_TOPICO = None
-BANNER_URL = "https://i.imgur.com/4M34hi2.png"
-
-fila = []  # [(user, gelo)]
+fila = []  # [(user, modo)]
 partidas = {}
-pix_db = {}
-
-MODO_ATUAL = "1v1"
-VALOR_ATUAL = 5.0
+CANAL_TOPICO = None
+VALOR_ATUAL = 5.00
 
 def formatar_valor(v):
     return f"{v:.2f}".replace(".", ",")
 
-# ===== MODAL BANNER =====
-class BannerModal(Modal, title="Definir Banner"):
-    link = TextInput(label="Link da imagem (URL)")
+class RegrasModal(Modal, title="Combinar Regras"):
+    regras = TextInput(label="Digite as regras", style=discord.TextStyle.paragraph)
 
     async def on_submit(self, interaction: discord.Interaction):
-        global BANNER_URL
-        BANNER_URL = self.link.value
-        await interaction.response.send_message("✅ Banner atualizado!", ephemeral=True)
+        await interaction.channel.send(f"📜 **Regras combinadas:**\n{self.regras.value}")
+        await interaction.response.defer()
 
-# ===== PAINEL CONFIG =====
-class PainelView(View):
-    @discord.ui.button(label="Escolher banner da fila", style=discord.ButtonStyle.blurple)
-    async def banner(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(BannerModal())
+class ConfirmacaoView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-@bot.command()
-async def painel(ctx):
-    await ctx.send("⚙️ Painel de Configuração", view=PainelView())
+    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green)
+    async def confirmar(self, interaction: discord.Interaction, button: Button):
+        dados = partidas.get(interaction.channel.id)
+        if not dados:
+            return
 
-# ===== PIX =====
-class PixModal(Modal, title="Cadastrar Pix"):
-    nome = TextInput(label="Nome")
-    chave = TextInput(label="Chave Pix")
-    qrcode = TextInput(label="Link QR Code")
+        if interaction.user not in dados["jogadores"]:
+            return await interaction.response.send_message("❌ Você não está na partida.", ephemeral=True)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        pix_db[interaction.user.id] = {
-            "nome": self.nome.value,
-            "chave": self.chave.value,
-            "qrcode": self.qrcode.value
-        }
-        await interaction.response.send_message("✅ Pix salvo!", ephemeral=True)
+        if interaction.user not in dados["confirmados"]:
+            dados["confirmados"].append(interaction.user)
 
-class PixView(View):
-    @discord.ui.button(label="Cadastrar chave Pix", style=discord.ButtonStyle.green)
-    async def add(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(PixModal())
+        if len(dados["confirmados"]) == 2:
+            valor_formatado = formatar_valor(dados["valor"])
+            await interaction.channel.edit(name=f"partida - {valor_formatado}")
+            await interaction.channel.send("✅ Ambos confirmaram! Partida iniciada.")
 
-    @discord.ui.button(label="Ver minha chave Pix", style=discord.ButtonStyle.blurple)
-    async def ver(self, interaction: discord.Interaction, button: Button):
-        pix = pix_db.get(interaction.user.id)
-        if not pix:
-            return await interaction.response.send_message("❌ Você não cadastrou Pix.", ephemeral=True)
+        await interaction.response.defer()
 
-        embed = discord.Embed(title="💰 Seu Pix", color=0x2ecc71)
-        embed.add_field(name="Nome", value=pix["nome"], inline=False)
-        embed.add_field(name="Chave", value=pix["chave"], inline=False)
-        embed.set_image(url=pix["qrcode"])
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    @discord.ui.button(label="Recusar", style=discord.ButtonStyle.red)
+    async def recusar(self, interaction: discord.Interaction, button: Button):
+        await interaction.channel.send("❌ Partida recusada.")
+        await interaction.response.defer()
 
-@bot.command()
-async def pix(ctx):
-    await ctx.send("💳 Para colocar sua chave Pix aperta no botão abaixo:", view=PixView())
+    @discord.ui.button(label="Combinar regras", style=discord.ButtonStyle.blurple)
+    async def combinar(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(RegrasModal())
 
-# ===== FILA VIEW =====
 class FilaView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -88,20 +67,19 @@ class FilaView(View):
             texto = "Nenhum"
 
         embed = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71)
-        embed.set_image(url=BANNER_URL)
-        embed.add_field(name="Modo", value=MODO_ATUAL, inline=False)
+        embed.add_field(name="Modo", value="1v1", inline=False)
         embed.add_field(name="Valor", value=f"R$ {formatar_valor(VALOR_ATUAL)}", inline=False)
         embed.add_field(name="Jogadores", value=texto, inline=False)
 
         await message.edit(embed=embed, view=self)
 
-    @discord.ui.button(label="Gelo infinito", style=discord.ButtonStyle.gray)
-    async def gelo_infinito(self, interaction: discord.Interaction, button: Button):
-        await self.entrar(interaction, "gelo infinito")
-
     @discord.ui.button(label="Gelo normal", style=discord.ButtonStyle.gray)
     async def gelo_normal(self, interaction: discord.Interaction, button: Button):
         await self.entrar(interaction, "gelo normal")
+
+    @discord.ui.button(label="Gelo infinito", style=discord.ButtonStyle.gray)
+    async def gelo_infinito(self, interaction: discord.Interaction, button: Button):
+        await self.entrar(interaction, "gelo infinito")
 
     @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.red)
     async def sair(self, interaction: discord.Interaction, button: Button):
@@ -114,16 +92,17 @@ class FilaView(View):
         if any(u == interaction.user for u, _ in fila):
             return await interaction.response.send_message("Você já está na fila.", ephemeral=True)
 
+        if len(fila) >= 2:
+            return await interaction.response.send_message("Fila cheia.", ephemeral=True)
+
         fila.append((interaction.user, modo))
         await self.atualizar(interaction.message)
 
         if len(fila) == 2:
-            (j1, m1), (j2, m2) = fila
-            if m1 == m2:
-                await criar_topico(interaction.guild)
+            await criar_topico(interaction.guild)
+
         await interaction.response.defer()
 
-# ===== CRIAR TÓPICO =====
 async def criar_topico(guild):
     global fila
     canal = bot.get_channel(CANAL_TOPICO)
@@ -138,57 +117,42 @@ async def criar_topico(guild):
         type=discord.ChannelType.public_thread
     )
 
+    modo_texto = f"1v1 {m1}"
+
     partidas[topico.id] = {
         "jogadores": [j1, j2],
         "confirmados": [],
         "valor": VALOR_ATUAL
     }
 
-    embed = discord.Embed(title="⚔️ PARTIDA CRIADA", color=0x3498db)
-    embed.add_field(name="Modo", value=f"{MODO_ATUAL} {m1}", inline=False)
+    embed = discord.Embed(title="⚔️ PARTIDA", description="Conversem e confirmem", color=0x3498db)
+    embed.add_field(name="Modo", value=modo_texto, inline=False)
     embed.add_field(name="Valor", value=f"R$ {formatar_valor(VALOR_ATUAL)}", inline=False)
     embed.add_field(name="Jogadores", value=f"{j1.mention} x {j2.mention}", inline=False)
 
     await topico.send(embed=embed, view=ConfirmacaoView())
 
-# ===== CONFIRMAÇÃO =====
-class ConfirmacaoView(View):
-    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green)
-    async def confirmar(self, interaction: discord.Interaction, button: Button):
-        dados = partidas.get(interaction.channel.id)
-        if not dados:
-            return
-
-        if interaction.user not in dados["confirmados"]:
-            dados["confirmados"].append(interaction.user)
-
-        if len(dados["confirmados"]) == 2:
-            await interaction.channel.edit(
-                name=f"partida - {formatar_valor(dados['valor'])}"
-            )
-
-        await interaction.response.defer()
-
-# ===== COMANDOS =====
 @bot.command()
 async def canal(ctx):
     global CANAL_TOPICO
     CANAL_TOPICO = ctx.channel.id
-    await ctx.send("✅ Canal definido para criar os tópicos.")
+    await ctx.send("✅ Este canal foi definido para criar os tópicos.")
 
 @bot.command()
-async def fila(ctx, modo: str, valor: float):
-    global MODO_ATUAL, VALOR_ATUAL
-    MODO_ATUAL = modo
-    VALOR_ATUAL = valor
-
+async def fila(ctx):
     embed = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71)
-    embed.set_image(url=BANNER_URL)
-    embed.add_field(name="Modo", value=modo, inline=False)
-    embed.add_field(name="Valor", value=f"R$ {formatar_valor(valor)}", inline=False)
+    embed.add_field(name="Modo", value="1v1", inline=False)
+    embed.add_field(name="Valor", value=f"R$ {formatar_valor(VALOR_ATUAL)}", inline=False)
     embed.add_field(name="Jogadores", value="Nenhum", inline=False)
 
     await ctx.send(embed=embed, view=FilaView())
 
-# ===== START =====
+@bot.command()
+async def url(ctx):
+    if not ctx.message.attachments:
+        return await ctx.send("❌ Envie uma imagem junto com o comando `.url`")
+
+    imagem = ctx.message.attachments[0]
+    await ctx.send(f"✅ URL da imagem:\n{imagem.url}")
+
 bot.run(TOKEN)
