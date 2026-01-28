@@ -12,7 +12,7 @@ BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940
 
 filas = {}
 partidas = {}
-pix_db = {}  # user_id: {"nome":..., "chave":..., "qr":...}
+pix_db = {}
 
 CANAIS_TOPICO = []
 canal_index = 0
@@ -172,8 +172,7 @@ async def criar_topico(guild, j1, j2, modo, valor):
     canal = bot.get_channel(CANAIS_TOPICO[canal_index])
     canal_index = (canal_index + 1) % len(CANAIS_TOPICO)
 
-    nome = f"partida - {formatar_valor(valor)}"
-    thread = await canal.create_thread(name=nome)
+    thread = await canal.create_thread(name=f"partida - {formatar_valor(valor)}")
 
     mediador = guild.me
 
@@ -194,8 +193,9 @@ async def criar_topico(guild, j1, j2, modo, valor):
 # ================= COMANDOS =================
 @bot.command()
 async def canal(ctx, *canais: discord.TextChannel):
-    if len(canais) < 3:
-        return await ctx.send("❌ Use no mínimo 3 canais.")
+    if len(canais) < 1:
+        return await ctx.send("❌ Use: .canal #canal1 #canal2 #canal3")
+
     global CANAIS_TOPICO
     CANAIS_TOPICO = [c.id for c in canais]
     await ctx.send("✅ Canais definidos para criar tópicos!")
