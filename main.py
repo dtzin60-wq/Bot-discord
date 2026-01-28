@@ -1,12 +1,10 @@
 import discord
 from discord.ext import commands
-from discord.ui import View, Button, Modal, TextInput
+from discord.ui import View, Button, Modal, TextInput, Select
 import os
 
 TOKEN = os.getenv("TOKEN")
 CARGO_AUTORIZADO = "Mediador"
-
-CANAIS_PERMITIDOS = [123456789012345678, 987654321098765432, 111111111111111111]
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents)
@@ -15,6 +13,7 @@ pix_db = {}
 fila_mediadores = []
 filas = {}
 partidas = {}
+canal_topico = None  # canal escolhido no comando .canal
 
 # ================= UTIL =================
 def formatar_valor(v):
@@ -33,30 +32,32 @@ def validar_modo(modo):
     except:
         return None
 
-# ================= PIX =================
-class PixModal(Modal, title="Cadastrar Pix"):
-    nome = TextInput(label="Nome")
-    chave = TextInput(label="Chave Pix")
-    qrcode = TextInput(label="Link do QR Code")
+# ================= ESCOLHER CANAL =================
+class CanalSelect(Select):
+    def __init__(self, canais):
+        options = [
+            discord.SelectOption(label=canal.name, value=str(canal.id))
+            for canal in canais
+        ]
+        super().__init__(placeholder="Escolha o canal onde serão criados os tópicos", options=options)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        pix_db[interaction.user.id] = {
-            "nome": self.nome.value,
-            "chave": self.chave.value,
-            "qrcode": self.qrcode.value
-        }
-        await interaction.response.send_message("✅ Pix cadastrado!", ephemeral=True)
+    async def callback(self, interaction: discord.Interaction):
+        global canal_topico
+        canal_topico = int(self.values[0])
+        await interaction.response.send_message("✅ Canal definido com sucesso!", ephemeral=True)
 
-class PixView(View):
-    @discord.ui.button(label="Cadastrar Pix", style=discord.ButtonStyle.green)
-    async def cadastrar(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(PixModal())
+class CanalView(View):
+    def __init__(self, canais):
+        super().__init__(timeout=60)
+        self.add_item(CanalSelect(canais))
 
 @bot.command()
-async def cadastrarpix(ctx):
+async def canal(ctx):
     if not tem_cargo(ctx.author):
         return await ctx.send("❌ Sem permissão.")
-    await ctx.send("💰 Painel Pix", view=PixView())
+
+    canais = [c for c in ctx.guild.text_channels]
+    await ctx.send("📌 Escolha o canal para criar os tópicos:", view=CanalView(canais))
 
 # ================= FILA MEDIADOR =================
 class MediadorView(View):
@@ -128,19 +129,12 @@ class FilaView(View):
 
         await interaction.response.defer()
 
-    @discord.ui.button(label="Sair", style=discord.ButtonStyle.red)
-    async def sair(self, interaction: discord.Interaction, button: Button):
-        fila = filas[self.modo]["jogadores"]
-        if interaction.user in fila:
-            fila.remove(interaction.user)
-        await self.atualizar(interaction)
-        await interaction.response.defer()
-
     async def criar_topico(self, interaction):
-        canal_base = interaction.channel
+        global canal_topico
+        if canal_topico is None:
+            return await interaction.followup.send("❌ Use .canal primeiro para definir onde criar os tópicos.", ephemeral=True)
 
-        if canal_base.id not in CANAIS_PERMITIDOS:
-            return await interaction.followup.send("❌ Não posso criar tópico neste canal.", ephemeral=True)
+        canal_base = interaction.guild.get_channel(canal_topico)
 
         jogadores = filas[self.modo]["jogadores"].copy()
         filas[self.modo]["jogadores"].clear()
@@ -186,9 +180,7 @@ class ConfirmacaoView(View):
                 dados["valor"] += 0.10
                 dados["taxa_aplicada"] = True
 
-            novo_nome = f"partida-{formatar_valor(dados['valor'])}"
-            await interaction.channel.edit(name=novo_nome)
-            await interaction.channel.purge()
+            await interaction.channel.edit(name=f"partida-{formatar_valor(dados['valor'])}")
 
             mediador = dados["mediador"]
             pix = pix_db.get(mediador.id) if mediador else None
@@ -205,11 +197,6 @@ class ConfirmacaoView(View):
 
             await interaction.channel.send(embed=embed)
 
-        await interaction.response.defer()
-
-    @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.gray)
-    async def regras(self, interaction: discord.Interaction, button: Button):
-        await interaction.channel.send("📜 Conversem e combinem as regras.")
         await interaction.response.defer()
 
 # ================= COMANDO FILA =================
