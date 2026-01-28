@@ -8,11 +8,11 @@ TOKEN = os.getenv("TOKEN")
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-# ====== DADOS ======
+# ===== CONFIG =====
 config = {
     "cargo_analista": None,
     "cargo_mediador": None,
-    "canais_topico": []
+    "canal_topico": None
 }
 
 pix_db = {}
@@ -20,7 +20,7 @@ fila_mediadores = []
 filas = {}
 partidas = {}
 
-# ====== UTIL ======
+# ===== UTIL =====
 def formatar_valor(v):
     return f"{v:.2f}".replace(".", ",")
 
@@ -30,16 +30,6 @@ def tem_cargo(member, cargo_id):
     if not cargo_id:
         return False
     return any(r.id == cargo_id for r in member.roles)
-
-def validar_modo(modo):
-    try:
-        a, b = modo.lower().split("v")
-        a, b = int(a), int(b)
-        if a == b and 1 <= a <= 4:
-            return a * 2
-        return None
-    except:
-        return None
 
 # ================= PIX =================
 class PixModal(Modal, title="Cadastrar Pix"):
@@ -72,15 +62,6 @@ class PixView(View):
         embed.set_image(url=pix["qrcode"])
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Ver Pix dos Mediadores", style=discord.ButtonStyle.gray)
-    async def ver_mediadores(self, interaction: discord.Interaction, button: Button):
-        texto = ""
-        for uid, pix in pix_db.items():
-            texto += f"<@{uid}> → {pix['chave']}\n"
-        if not texto:
-            texto = "Nenhum mediador cadastrou Pix."
-        await interaction.response.send_message(texto, ephemeral=True)
-
 @bot.command()
 async def chavepix(ctx):
     await ctx.send("💳 Painel Pix", view=PixView())
@@ -89,7 +70,6 @@ async def chavepix(ctx):
 class PainelView(View):
     def __init__(self, guild):
         super().__init__(timeout=None)
-
         self.add_item(CargoSelect(guild, "Analista"))
         self.add_item(CargoSelect(guild, "Mediador"))
         self.add_item(CanalSelect(guild))
@@ -111,11 +91,11 @@ class CargoSelect(Select):
 class CanalSelect(Select):
     def __init__(self, guild):
         options = [discord.SelectOption(label=c.name, value=str(c.id)) for c in guild.text_channels]
-        super().__init__(placeholder="Escolher até 3 canais", options=options, max_values=3)
+        super().__init__(placeholder="Escolher canal do tópico", options=options, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
-        config["canais_topico"] = [int(v) for v in self.values]
-        await interaction.response.send_message("✅ Canais configurados.", ephemeral=True)
+        config["canal_topico"] = int(self.values[0])
+        await interaction.response.send_message("✅ Canal configurado.", ephemeral=True)
 
 @bot.command()
 async def painel(ctx):
@@ -148,11 +128,11 @@ async def filamediador(ctx):
 
 # ================= FILA APOSTA =================
 class FilaView(View):
-    def __init__(self, modo, valor, limite):
+    def __init__(self, modo, valor):
         super().__init__(timeout=None)
         self.modo = modo
         self.valor = valor
-        self.limite = limite
+        self.limite = 2
 
     async def atualizar(self, interaction):
         fila = filas[self.modo]
@@ -166,20 +146,25 @@ class FilaView(View):
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
     async def entrar(self, interaction: discord.Interaction, button: Button):
         fila = filas[self.modo]
+
         if interaction.user in fila:
-            return await interaction.response.send_message("Já está.", ephemeral=True)
+            return await interaction.response.send_message("Já está na fila.", ephemeral=True)
+
+        if len(fila) >= self.limite:
+            return await interaction.response.send_message("Fila cheia.", ephemeral=True)
+
         fila.append(interaction.user)
         await self.atualizar(interaction)
 
-        if len(fila) == self.limite:
-            await self.criar_topico(interaction)
+        if len(fila) == 2:
+            await self.criar_topico()
 
         await interaction.response.defer()
 
-    async def criar_topico(self, interaction):
-        canal = interaction.channel
-        if canal.id not in config["canais_topico"]:
-            return await interaction.followup.send("❌ Canal não permitido.", ephemeral=True)
+    async def criar_topico(self):
+        canal = bot.get_channel(config["canal_topico"])
+        if not canal:
+            return
 
         jogadores = filas[self.modo].copy()
         filas[self.modo].clear()
@@ -244,10 +229,6 @@ async def fila(ctx, modo: str, valor_txt: str):
     if not tem_cargo(ctx.author, config["cargo_analista"]):
         return await ctx.send("❌ Sem permissão.")
 
-    limite = validar_modo(modo)
-    if not limite:
-        return await ctx.send("Use 1v1 até 4v4.")
-
     valor = float(valor_txt.replace("valor:", "").replace(",", "."))
 
     filas[modo] = []
@@ -257,7 +238,7 @@ async def fila(ctx, modo: str, valor_txt: str):
     embed.add_field(name="Valor", value=f"R$ {formatar_valor(valor)}", inline=False)
     embed.add_field(name="Jogadores", value="Nenhum", inline=False)
 
-    await ctx.send(embed=embed, view=FilaView(modo, valor, limite))
+    await ctx.send(embed=embed, view=FilaView(modo, valor))
 
 # ================= START =================
 bot.run(TOKEN)
