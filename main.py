@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # --- CONFIGURAÇÕES ---
 TOKEN = os.getenv("TOKEN")
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
-OWNER_ID = 123456789012345678  # <--- COLOQUE SEU ID AQUI
+OWNER_ID = 1461858587080130663  # <--- COLOQUE SEU ID AQUI
 
 # ================= BANCO DE DADOS =================
 def init_db():
