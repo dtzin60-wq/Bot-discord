@@ -11,7 +11,7 @@ import random
 TOKEN = os.getenv("DISCORD_TOKEN")
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 LOGO_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/LOGO_ROXA.png" 
-# Link da imagem do seu QR Code
+# Link da imagem do seu QR Code (Aparecerá quando clicar no botão QR Code)
 QR_CODE_URL = "https://sua_imagem_aqui.com/qrcode.png" 
 
 intents = discord.Intents.default()
@@ -54,7 +54,7 @@ def tem_permissao(member, chave_config):
     role = member.guild.get_role(int(role_id))
     return (role in member.roles) if role else member.guild_permissions.administrator
 
-# ================= PAINEL PIX (ESTILO ORG FIRE COM QR CODE) =================
+# ================= PAINEL PIX (COMPLETO) =================
 
 class ViewPainelPix(View):
     def __init__(self):
@@ -95,7 +95,7 @@ class ViewPainelPix(View):
                 except: await m_it.response.send_message("❌ ID inválido.", ephemeral=True)
         await it.response.send_modal(ModalBusca())
 
-# ================= FILA (RESET AUTO + MODO NO NOME + CANAL RANDOM) =================
+# ================= FILA (MODO DO LADO DO NOME) =================
 
 class ViewFilaAposta(View):
     def __init__(self, chave, valor, modo_nome):
@@ -104,8 +104,9 @@ class ViewFilaAposta(View):
 
     async def atualizar(self, msg):
         lista = filas_partida.get(self.chave, [])
-        # Exibe: @Jogador - gelo infinito
-        jogadores_str = "\n".join([f"{u.mention} - {m}" for u, m in lista]) if lista else "Vazio"
+        # EXIBIÇÃO: @Jogador - gelo infinito
+        jogadores_str = "\n".join([f"{u.mention} -{m}" for u, m in lista]) if lista else "Vazio"
+        
         val_txt = f"{self.valor:.2f}".replace(".", ",")
         embed = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71)
         embed.add_field(name="🕹️ Modo", value=f"`{self.modo_nome}`", inline=False)
@@ -124,13 +125,11 @@ class ViewFilaAposta(View):
         lista.append((it.user, modo_gelo))
         if len(lista) == 2:
             p1, p2 = lista[0][0], lista[1][0]
-            filas_partida[self.chave] = [] # RESET IMEDIATO DA LISTA NO PAINEL
+            filas_partida[self.chave] = [] # RESET DO PAINEL
             
             med_id = fila_mediadores.pop(0); fila_mediadores.append(med_id)
-            
-            # Sorteio entre os 3 canais configurados
-            canais_ids = [puxar_config("canal_1"), puxar_config("canal_2"), puxar_config("canal_3")]
-            validos = [c for c in canais_ids if c]
+            canais = [puxar_config("canal_1"), puxar_config("canal_2"), puxar_config("canal_3")]
+            validos = [c for c in canais if c]
             
             canal = bot.get_channel(int(random.choice(validos)))
             thread = await canal.create_thread(name=f"⚔️-{p1.name}-vs-{p2.name}", type=discord.ChannelType.public_thread)
@@ -143,7 +142,7 @@ class ViewFilaAposta(View):
             await it.response.send_message(f"✅ Partida criada em {canal.mention}!", ephemeral=True)
             await self.atualizar(it.message)
         else:
-            await it.response.send_message(f"✅ Entrou na fila!", ephemeral=True)
+            await it.response.send_message(f"✅ Você entrou como {modo_gelo}!", ephemeral=True)
             await self.atualizar(it.message)
 
     @discord.ui.button(label="Gelo normal", style=discord.ButtonStyle.gray)
@@ -195,21 +194,22 @@ async def mediar(ctx):
     class ViewMed(View):
         def __init__(self): super().__init__(timeout=None)
         async def emb(self):
-            e = discord.Embed(title="Painel da Fila Controladora", description="**Mediadores ativos:**\n\n", color=0x2b2d31)
-            lista = "".join([f"• <@{u}>\n" for u in fila_mediadores]) if fila_mediadores else "Vazio"
+            e = discord.Embed(title="Painel da fila controladora", description="**Entre na fila para mediar**\n\n", color=0x2b2d31)
+            lista = "".join([f"{i+1} • <@{u}>\n" for i, u in enumerate(fila_mediadores)]) if fila_mediadores else "Vazio"
             e.description += lista
             e.set_thumbnail(url=LOGO_URL)
             return e
-        @discord.ui.button(label="Entrar na Fila", style=discord.ButtonStyle.green, emoji="🟢")
+        @discord.ui.button(label="Entrar na fila", style=discord.ButtonStyle.green, emoji="🟢")
         async def e(self, it, b):
             if it.user.id not in fila_mediadores: fila_mediadores.append(it.user.id)
             await it.response.edit_message(embed=await self.emb())
-        @discord.ui.button(label="Sair", style=discord.ButtonStyle.red, emoji="🔴")
+        @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.red, emoji="🔴")
         async def s(self, it, b):
             if it.user.id in fila_mediadores: fila_mediadores.remove(it.user.id)
             await it.response.edit_message(embed=await self.emb())
     v = ViewMed(); await ctx.send(embed=await v.emb(), view=v)
 
 @bot.event
-async def on_ready(): init_db(); print(f"✅ {bot.user} Pronto")
+async def on_ready(): init_db(); print(f"✅ {bot.user} Online")
 bot.run(TOKEN)
+        
