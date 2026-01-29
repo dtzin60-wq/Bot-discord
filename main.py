@@ -14,7 +14,7 @@ bot = commands.Bot(command_prefix=".", intents=intents)
 
 # Cache temporário
 fila_mediadores = []
-partidas = {}
+partidas_ativas = {} # Para rastrear confirmações e mediador do tópico
 
 # ================= DATABASE =================
 def init_db():
@@ -63,9 +63,9 @@ async def botconfig(ctx):
             await it.response.send_message("✅ Permissão Mediadores configurada.", ephemeral=True)
 
     emb = discord.Embed(title="⚙️ Painel de Configuração", color=discord.Color.blue())
-    await ctx.send(embed=emb, view=ViewConfig())
+    await ctx.send(embed=embed, view=ViewConfig())
 
-# ================= FILA CONTROLADORA (MEDIADORES) =================
+# ================= FILA CONTROLADORA =================
 class ViewMed(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -80,20 +80,18 @@ class ViewMed(View):
     async def e(self, it, b):
         role_id = pegar_config("role_mediador")
         if role_id and not any(r.id == int(role_id) for r in it.user.roles):
-            return await it.response.send_message("❌ Sem permissão de Mediador.", ephemeral=True)
+            return await it.response.send_message("❌ Sem permissão.", ephemeral=True)
         if it.user.id not in fila_mediadores:
             fila_mediadores.append(it.user.id)
             await it.response.edit_message(embed=self.gerar_embed(), view=self)
         else:
-            await it.response.send_message("Você já está na fila.", ephemeral=True)
+            await it.response.send_message("Já está na fila.", ephemeral=True)
 
     @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.danger, emoji="🔴")
     async def s(self, it, b):
         if it.user.id in fila_mediadores:
             fila_mediadores.remove(it.user.id)
             await it.response.edit_message(embed=self.gerar_embed(), view=self)
-        else:
-            await it.response.send_message("Você não está na fila.", ephemeral=True)
 
 @bot.command()
 async def mediar(ctx):
@@ -124,23 +122,49 @@ async def Pix(ctx):
             else:
                 await it.response.send_message("❌ Nenhuma chave cadastrada.", ephemeral=True)
 
-    await ctx.send("💠 **Painel Para Configurar Chave PIX**", view=VPix())
+    emb = discord.Embed(title="💠 Painel Para Configurar Chave PIX", description="Configure ou visualize sua chave PIX abaixo.", color=0x4b0082)
+    await ctx.send(embed=emb, view=VPix())
 
-# ================= FILA JOGADORES E TÓPICO =================
+# ================= LÓGICA DO TÓPICO E CONFIRMAÇÃO =================
 class ViewTopico(View):
-    def __init__(self):
+    def __init__(self, p1_id, p2_id, med_id):
         super().__init__(timeout=None)
+        self.p1_id = p1_id
+        self.p2_id = p2_id
+        self.med_id = med_id
+        self.confirmados = set()
 
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green)
     async def confirmar(self, it, b):
-        await it.response.send_message(f"✅ **{it.user.mention}** confirmou a aposta!")
+        if it.user.id not in [self.p1_id, self.p2_id]:
+            return await it.response.send_message("Você não é um dos jogadores!", ephemeral=True)
+        
+        self.confirmados.add(it.user.id)
+        await it.response.send_message(f"✅ **{it.user.mention}** confirmou!", delete_after=5)
+
+        if len(self.confirmados) == 2:
+            # LIMPAR MENSAGENS E MOSTRAR PIX
+            await it.channel.purge(limit=10) # Apaga as mensagens anteriores do tópico
+            
+            con = sqlite3.connect("dados.db")
+            res = con.execute("SELECT nome, chave FROM pix WHERE user_id=?", (self.med_id,)).fetchone()
+            con.close()
+            
+            emb_pix = discord.Embed(title="💸 PAGAMENTO AO MEDIADOR", color=discord.Color.gold())
+            if res:
+                emb_pix.description = f"Ambos confirmaram! Realizem o pagamento para o mediador:\n\n**Nome:** {res[0]}\n**Chave PIX:** `{res[1]}`"
+            else:
+                emb_pix.description = f"Ambos confirmaram! O mediador <@{self.med_id}> ainda não cadastrou o PIX no comando `.Pix`."
+            
+            await it.channel.send(content=f"<@{self.p1_id}> <@{self.p2_id}>", embed=emb_pix)
 
     @discord.ui.button(label="Recusar", style=discord.ButtonStyle.danger)
     async def recusar(self, it, b):
-        await it.response.send_message("❌ Recusado. Deletando tópico...")
+        await it.response.send_message("❌ Aposta cancelada. Deletando tópico...")
         await asyncio.sleep(3)
         await it.channel.delete()
 
+# ================= FILA DE JOGADORES =================
 class ViewFila(View):
     def __init__(self, modo, valor):
         super().__init__(timeout=None)
@@ -149,8 +173,8 @@ class ViewFila(View):
     def gerar_embed(self):
         txt = "\n".join([f"👤 {u.mention} - **{g}**" for u, g in self.users]) if self.users else "Nenhum jogador na fila"
         emb = discord.Embed(title="🎮 SPACE APOSTAS | FILA", color=discord.Color.blue())
-        emb.add_field(name="👑 Modo", value=self.modo, inline=True)
-        emb.add_field(name="💎 Valor", value=f"R$ {self.valor}", inline=True)
+        emb.add_field(name="👑 Modo", value=self.modo)
+        emb.add_field(name="💎 Valor", value=f"R$ {self.valor}")
         emb.add_field(name="⚡ Jogadores", value=txt, inline=False)
         emb.set_image(url=BANNER_URL)
         return emb
@@ -161,25 +185,24 @@ class ViewFila(View):
         
         if len(self.users) == 2:
             p1, g1 = self.users[0]; p2, g2 = self.users[1]
-            self.users = [] # EXPULSÃO AUTOMÁTICA
+            self.users = []
             await it.message.edit(embed=self.gerar_embed())
             
             if not fila_mediadores:
-                return await it.response.send_message("❌ Sem mediadores!", ephemeral=True)
+                return await it.response.send_message("❌ Sem mediadores online!", ephemeral=True)
             
             med_id = fila_mediadores.pop(0)
             thread = await it.channel.create_thread(name=f"Aposta-{self.valor}", type=discord.ChannelType.public_thread)
             
-            # PAINEL DO TÓPICO (IMAGEM 7)
             emb_p = discord.Embed(title="Partida Confirmada", color=0x2b2d31)
             emb_p.add_field(name="🎮 Estilo de Jogo", value=f"1v1 | {gelo}", inline=False)
-            emb_p.add_field(name="ℹ️ Informações da Aposta", value=f"Valor Da Sala: R$ 0,00\nMediador: <@{med_id}>", inline=False)
+            emb_p.add_field(name="ℹ️ Informações da Aposta", value=f"Mediador: <@{med_id}>", inline=False)
             emb_p.add_field(name="💸 Valor da Aposta", value=f"R$ {self.valor}", inline=False)
             emb_p.add_field(name="👥 Jogadores", value=f"{p1.mention}\n{p2.mention}", inline=False)
             
             await thread.send(f"{p1.mention} {p2.mention} | Mediador: <@{med_id}>")
-            await thread.send(embed=emb_p, view=ViewTopico())
-            await it.response.send_message(f"✅ Tópico Criado: {thread.mention}", ephemeral=True)
+            await thread.send(embed=emb_p, view=ViewTopico(p1.id, p2.id, med_id))
+            await it.response.send_message(f"✅ Tópico: {thread.mention}", ephemeral=True)
         else:
             await it.response.edit_message(embed=self.gerar_embed(), view=self)
 
@@ -203,4 +226,4 @@ async def on_ready():
     print(f"✅ {bot.user} ONLINE")
 
 bot.run(TOKEN)
-                          
+            
