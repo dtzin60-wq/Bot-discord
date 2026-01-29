@@ -1,4 +1,4 @@
-import discord
+ import discord
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput, RoleSelect, ChannelSelect, Select
 import sqlite3, os, random, asyncio
