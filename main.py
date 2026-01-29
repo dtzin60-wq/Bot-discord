@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from discord.ui import View, Button, Modal, TextInput, RoleSelect, ChannelSelect
+from discord.ui import View, Button, Modal, TextInput, RoleSelect, ChannelSelect, UserSelect
 import sqlite3
 import os
 import asyncio
@@ -38,57 +38,82 @@ def puxar_config(chave):
     conn.close()
     return res[0] if res else None
 
-# Checagem de permissão personalizada
+# Checagem de staff
 def e_staff():
     async def predicate(ctx):
         if ctx.author.guild_permissions.administrator: return True
         cargo_staff_id = puxar_config("cargo_staff_id")
-        if cargo_staff_id and any(r.id == int(cargo_staff_id) for r in ctx.author.roles):
-            return True
-        return False
+        return cargo_staff_id and any(r.id == int(cargo_staff_id) for r in ctx.author.roles)
     return commands.check(predicate)
 
-# ================= VIEWS (AUXILIAR E PIX) =================
+# ================= SISTEMA DE VITÓRIA E COINS =================
+
+class ViewSelecionarVencedor(View):
+    def __init__(self, jogadores, thread):
+        super().__init__(timeout=None)
+        self.jogadores = jogadores
+        self.thread = thread
+
+        # Criar o menu de seleção com os jogadores da partida
+        select = discord.ui.Select(
+            placeholder="Escolha quem ganhou a partida...",
+            options=[discord.SelectOption(label=j.display_name, value=str(j.id), emoji="🏆") for j in jogadores]
+        )
+        select.callback = self.callback_vencedor
+        self.add_item(select)
+
+    async def callback_vencedor(self, it: discord.Interaction):
+        vencedor_id = int(it.data['values'][0])
+        vencedor = await bot.fetch_user(vencedor_id)
+        
+        await it.response.send_message(f"🏆 **VITÓRIA CONFIRMADA!**\nO jogador {vencedor.mention} venceu a partida.\n💰 **1 Coin** foi aplicado na conta do vencedor!")
+        
+        await asyncio.sleep(5)
+        await self.thread.edit(locked=True, archived=True)
 
 class ViewAuxiliar(View):
     def __init__(self, thread):
         super().__init__(timeout=None)
         self.thread = thread
 
-    @discord.ui.button(label="Vitória", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="🏆 Declarar Vitória", style=discord.ButtonStyle.green)
     async def vitoria(self, it, btn):
-        await it.response.send_message("🏆 Vitória declarada pelo mediador.")
+        dados = partidas_ativas.get(self.thread.id)
+        if not dados:
+            return await it.response.send_message("❌ Erro: Jogadores não encontrados para esta partida.", ephemeral=True)
+        
+        await it.response.send_message("Selecione o vencedor abaixo:", view=ViewSelecionarVencedor(dados["jogadores"], self.thread), ephemeral=True)
+
+    @discord.ui.button(label="⚠️ Vitória por W.O", style=discord.ButtonStyle.red)
+    async def wo(self, it, btn):
+        await it.response.send_message("⚠️ Partida encerrada por W.O (Ausência).")
+        await asyncio.sleep(3)
         await self.thread.edit(locked=True, archived=True)
 
-    @discord.ui.button(label="Vitória por W.O", style=discord.ButtonStyle.red)
-    async def wo(self, it, btn):
-        await it.response.send_message("⚠️ Partida encerrada por W.O.")
-        await self.thread.edit(locked=True, archived=True)
+# ================= RESTANTE DO SISTEMA =================
 
 class ViewPixMediador(View):
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="Enviar meu Pix (Mediador)", style=discord.ButtonStyle.blurple, emoji="👮")
-    async def enviar(self, it: discord.Interaction, button: Button):
+    async def enviar(self, it, button):
         cargo_id = puxar_config("cargo_mediador_id")
         if not cargo_id or not any(r.id == int(cargo_id) for r in it.user.roles):
-            return await it.response.send_message("❌ Você não tem o cargo de Mediador.", ephemeral=True)
+            return await it.response.send_message("❌ Apenas o Mediador pode enviar o Pix.", ephemeral=True)
 
         conn = sqlite3.connect("dados.db"); cursor = conn.cursor()
         cursor.execute("SELECT nome, chave, qr FROM pix WHERE user_id = ?", (it.user.id,))
         res = cursor.fetchone(); conn.close()
-        if not res: return await it.response.send_message("❌ Use `.pix` primeiro.", ephemeral=True)
+        if not res: return await it.response.send_message("❌ Use `.pix`.", ephemeral=True)
 
         await it.response.defer()
-        await it.channel.purge(limit=3)
+        await it.channel.purge(limit=2)
         embed = discord.Embed(title="🏦 PAGAMENTO PARA O MEDIADOR", color=0x2ecc71)
         embed.add_field(name="👤 Nome:", value=res[0], inline=False)
         embed.add_field(name="🔑 Chave:", value=f"`{res[1]}`", inline=False)
         if res[2] and res[2].startswith("http"): embed.set_image(url=res[2])
         await it.channel.send(content="@everyone", embed=embed)
-
-# ================= FILA E TÓPICOS =================
 
 class ViewConfirmarPartida(View):
     def __init__(self, thread_id):
@@ -110,12 +135,8 @@ class ViewConfirmarPartida(View):
 
     @discord.ui.button(label="Recusar", style=discord.ButtonStyle.red)
     async def btn_recusar(self, it, button):
-        await it.response.send_message("❌ Partida recusada. Encerrando...")
+        await it.response.send_message("❌ Partida recusada.")
         await it.channel.edit(locked=True, archived=True)
-
-    @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.gray, emoji="📝")
-    async def btn_regras(self, it, button):
-        await it.response.send_message("📝 Usem este chat para combinar as regras.", ephemeral=True)
 
 class ViewFilaPartida(View):
     def __init__(self, chave, valor):
@@ -127,13 +148,13 @@ class ViewFilaPartida(View):
         jogadores_str = "\n".join([f"{u.mention}" for u, m in lista]) if lista else "Vazio"
         embed = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71)
         embed.set_image(url=BANNER_URL)
-        embed.add_field(name="Valor", value=f"R$ {valor_str(self.valor)}", inline=False)
+        embed.add_field(name="Valor", value=f"R$ {self.valor:.2f}", inline=False)
         embed.add_field(name="Fila", value=jogadores_str, inline=False)
         await message.edit(embed=embed, view=self)
 
     async def entrar(self, it, submodo):
         canal_id = puxar_config("canal_destino")
-        if not canal_id: return await it.response.send_message("❌ Use `.canal` primeiro.", ephemeral=True)
+        if not canal_id: return await it.response.send_message("❌ Use `.canal`.", ephemeral=True)
         
         await it.response.defer(ephemeral=True)
         if self.chave not in filas_partida: filas_partida[self.chave] = []
@@ -158,7 +179,7 @@ class ViewFilaPartida(View):
     @discord.ui.button(label="Gelo infinito", style=discord.ButtonStyle.gray)
     async def gelo_i(self, it, btn): await self.entrar(it, "gelo infinito")
 
-# ================= COMANDOS ADMINISTRATIVOS =================
+# ================= COMANDOS =================
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -167,19 +188,16 @@ async def botconfig(ctx):
         @discord.ui.select(cls=RoleSelect, placeholder="Quem pode usar o painel .aux?")
         async def s_aux(self, it, sel):
             salvar_config("cargo_aux_id", sel.values[0].id)
-            await it.response.send_message(f"✅ Cargo de Auxiliar: {sel.values[0].mention}", ephemeral=True)
-        
+            await it.response.send_message(f"✅ Cargo Auxiliar: {sel.values[0].name}", ephemeral=True)
         @discord.ui.select(cls=RoleSelect, placeholder="Quem pode mandar o Pix?")
         async def s_med(self, it, sel):
             salvar_config("cargo_mediador_id", sel.values[0].id)
-            await it.response.send_message(f"✅ Cargo de Mediador (Pix): {sel.values[0].mention}", ephemeral=True)
-
-        @discord.ui.select(cls=RoleSelect, placeholder="Quem pode usar os comandos do bot?")
+            await it.response.send_message(f"✅ Cargo Mediador: {sel.values[0].name}", ephemeral=True)
+        @discord.ui.select(cls=RoleSelect, placeholder="Quem pode usar comandos Staff?")
         async def s_staff(self, it, sel):
             salvar_config("cargo_staff_id", sel.values[0].id)
-            await it.response.send_message(f"✅ Cargo de Staff (Comandos): {sel.values[0].mention}", ephemeral=True)
-
-    await ctx.send("⚙️ **Configuração de Cargos**", view=ConfigV())
+            await it.response.send_message(f"✅ Cargo Staff: {sel.values[0].name}", ephemeral=True)
+    await ctx.send("⚙️ Configuração", view=ConfigV())
 
 @bot.command()
 @e_staff()
@@ -189,7 +207,7 @@ async def canal(ctx):
         async def s(self, it, sel):
             salvar_config("canal_destino", sel.values[0].id)
             await it.response.send_message("✅ Canal configurado!", ephemeral=True)
-    await ctx.send("Onde as partidas serão criadas?", view=CV())
+    await ctx.send("Selecione o canal:", view=CV())
 
 @bot.command()
 @e_staff()
@@ -218,7 +236,7 @@ async def mediar(ctx):
 async def aux(ctx):
     c_id = puxar_config("cargo_aux_id")
     if c_id and any(r.id == int(c_id) for r in ctx.author.roles):
-        await ctx.send(embed=discord.Embed(title="🛠️ PAINEL"), view=ViewAuxiliar(ctx.channel))
+        await ctx.send(embed=discord.Embed(title="🛠️ PAINEL AUXILIAR"), view=ViewAuxiliar(ctx.channel))
 
 @bot.command()
 async def pix(ctx):
@@ -235,11 +253,9 @@ async def pix(ctx):
     v.children[0].callback = lambda i: i.response.send_modal(PM())
     await ctx.send("Configure seu Pix:", view=v)
 
-def valor_str(v): return f"{v:.2f}".replace(".", ",")
-
 @bot.event
 async def on_ready():
     init_db(); print(f"✅ {bot.user} online")
 
 bot.run(TOKEN)
-    
+        
