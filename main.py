@@ -208,19 +208,43 @@ async def mediar(ctx):
             await it.response.edit_message(embed=self.ge())
     await ctx.send(embed=VMed().ge(), view=VMed())
 
+# ================= COMANDO .Pix =================
 @bot.command()
 async def Pix(ctx):
     if not await tem_permissao(ctx, "perm_pix"): return
-    class MPix(Modal, title="Cadastro PIX"):
-        n_in = TextInput(label="Nome Titular"); c_in = TextInput(label="Chave PIX"); q_in = TextInput(label="Link QR Code", required=False)
-        async def on_submit(self, i):
+
+    class MPix(Modal, title="Configurar Minha Chave PIX"):
+        n_in = TextInput(label="Nome Completo do Titular", placeholder="Ex: João da Silva")
+        c_in = TextInput(label="Sua Chave PIX", placeholder="Ex: CPF, E-mail ou Celular")
+        q_in = TextInput(label="URL do QR Code (Link)", placeholder="Link da imagem (opcional)", required=False)
+        
+        async def on_submit(self, i): 
             db_execute("INSERT OR REPLACE INTO pix VALUES (?,?,?,?)", (i.user.id, self.n_in.value, self.c_in.value, self.q_in.value))
-            await i.response.send_message("✅ PIX Cadastrado!", ephemeral=True)
-    class VPix(View):
-        @discord.ui.button(label="Configurar PIX", style=discord.ButtonStyle.green, emoji="💠")
-        async def cp(self, it, b): await it.response.send_modal(MPix())
-    emb = discord.Embed(title="Painel PIX", description="Configure seus dados de recebimento.", color=0x4b0082)
-    await ctx.send(embed=emb, view=VPix())
+            await i.response.send_message("✅ Seus dados de pagamento foram salvos!", ephemeral=True)
+
+    class PixView(View):
+        def __init__(self):
+            super().__init__(timeout=None)
+
+        @discord.ui.button(label="Cadastrar/Editar Pix", style=discord.ButtonStyle.green, emoji="📝")
+        async def config_pix(self, it, b):
+            await it.response.send_modal(MPix())
+
+        @discord.ui.button(label="Ver Chave Pix", style=discord.ButtonStyle.secondary, emoji="🔍")
+        async def ver_pix(self, it, b):
+            con = sqlite3.connect(DB_PATH)
+            r = con.execute("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (it.user.id,)).fetchone()
+            con.close()
+            if not r:
+                return await it.response.send_message("❌ Você ainda não tem uma chave cadastrada!", ephemeral=True)
+            emb_ver = discord.Embed(title="📍 Sua Chave Cadastrada", color=0x00FF7F)
+            emb_ver.add_field(name="👤 Nome:", value=f"`{r[0]}`", inline=False)
+            emb_ver.add_field(name="🔑 Chave:", value=f"`{r[1]}`", inline=False)
+            if r[2]: emb_ver.set_image(url=r[2])
+            await it.response.send_message(embed=emb_ver, ephemeral=True)
+
+    emb = discord.Embed(title="💠 Gerenciar Pagamentos PIX", description="Gerencie seus dados de recebimento para as apostas.", color=0x4b0082)
+    await ctx.send(embed=emb, view=PixView())
 
 @bot.command()
 async def fila(ctx, modo, valor):
@@ -252,4 +276,4 @@ async def canal(ctx):
 @bot.event
 async def on_ready(): init_db(); print("✅ Bot Online")
 bot.run(TOKEN)
-                    
+                
