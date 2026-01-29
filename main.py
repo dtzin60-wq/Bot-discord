@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 # --- CONFIGURAÇÕES ---
 TOKEN = os.getenv("TOKEN")
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
+
+# SEU ID PARA ACESSO EXCLUSIVO À VALIDADE
 OWNER_ID = 1461858587080130663 
 
 # ================= BANCO DE DADOS =================
@@ -34,13 +36,6 @@ def checar_validade(guild_id):
         return datetime.now() < exp
     except: return False
 
-async def tem_permissao(ctx, funcao):
-    if ctx.author.id == OWNER_ID or ctx.author.guild_permissions.administrator: return True
-    con = sqlite3.connect("dados.db"); r = con.execute("SELECT role_id FROM permissoes WHERE funcao=?", (funcao,)).fetchone(); con.close()
-    if not r: return False
-    role = ctx.guild.get_role(r[0])
-    return role in ctx.author.roles
-
 # ================= VIEWS DO TÓPICO (CONFIRMAR/RECUSAR) =================
 
 class ViewTopico(View):
@@ -52,7 +47,7 @@ class ViewTopico(View):
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green, emoji="✅")
     async def conf(self, it, b):
         if it.user.id not in [self.p1, self.p2]:
-            return await it.response.send_message("❌ Tu não estás nesta partida!", ephemeral=True)
+            return await it.response.send_message("❌ Você não está nesta partida!", ephemeral=True)
         
         self.confirmados.add(it.user.id)
         await it.response.send_message(f"✅ {it.user.mention} confirmou!", delete_after=5)
@@ -74,9 +69,9 @@ class ViewTopico(View):
     @discord.ui.button(label="Recusar", style=discord.ButtonStyle.danger, emoji="✖️")
     async def recusar(self, it, b):
         if it.user.id not in [self.p1, self.p2]:
-            return await it.response.send_message("❌ Tu não estás nesta partida!", ephemeral=True)
+            return await it.response.send_message("❌ Você não está nesta partida!", ephemeral=True)
         
-        await it.response.send_message(f"⚠️ {it.user.mention} recusou. O tópico será apagado...")
+        await it.response.send_message(f"⚠️ {it.user.mention} recusou a partida. O tópico será apagado em 5 segundos.")
         await asyncio.sleep(5)
         await it.channel.delete()
 
@@ -86,20 +81,20 @@ class VPix(View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Chave pix", style=discord.ButtonStyle.green, emoji="💠", custom_id="persist:cad_pix")
     async def cadastrar(self, it, b):
-        if not checar_validade(it.guild.id): return await it.response.send_message("❌ Renova o bot!", ephemeral=True)
+        if not checar_validade(it.guild.id): return await it.response.send_message("❌ Renove a licença!", ephemeral=True)
         class MPix(Modal, title="Cadastrar Chave PIX"):
             n = TextInput(label="Nome do Titular", placeholder="Nome completo")
             c = TextInput(label="Chave PIX", placeholder="Sua chave")
-            q = TextInput(label="Link do QR Code", placeholder="Opcional", required=False)
+            q = TextInput(label="Link do QR Code", placeholder="Link da imagem (opcional)", required=False)
             async def on_submit(self, i):
                 db_execute("INSERT OR REPLACE INTO pix VALUES (?,?,?,?)", (i.user.id, self.n.value, self.c.value, self.q.value))
-                await i.response.send_message("✅ Chave PIX salva!", ephemeral=True)
+                await i.response.send_message("✅ Chave PIX salva com sucesso!", ephemeral=True)
         await it.response.send_modal(MPix())
 
     @discord.ui.button(label="Sua Chave", style=discord.ButtonStyle.green, emoji="🔍", custom_id="persist:ver_pix")
     async def ver_sua(self, it, b):
         con = sqlite3.connect("dados.db"); r = con.execute("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (it.user.id,)).fetchone(); con.close()
-        if not r: return await it.response.send_message("❌ Não tens chave cadastrada.", ephemeral=True)
+        if not r: return await it.response.send_message("❌ Nenhuma chave cadastrada.", ephemeral=True)
         emb = discord.Embed(title="Sua Chave PIX", description=f"**Titular:** {r[0]}\n**Chave:** `{r[1]}`", color=0x2ecc71)
         if r[2]: emb.set_image(url=r[2])
         await it.response.send_message(embed=emb, ephemeral=True)
@@ -107,17 +102,16 @@ class VPix(View):
 class VMed(View):
     def __init__(self): super().__init__(timeout=None)
     def gerar_embed(self):
-        txt = "\n".join([f"**{i+1} •** <@{u}> (`{u}`)" for i, u in enumerate(fila_mediadores, 0)]) if fila_mediadores else "A fila está vazia."
-        emb = discord.Embed(title="Painel da fila controladora", description=f"__**Entre na fila para mediar**__\n\n{txt}", color=0x2b2d31)
+        txt = "\n".join([f"**{i+1} •** <@{u}> (`{u}`)" for i, u in enumerate(fila_mediadores, 0)]) if fila_mediadores else "Fila vazia."
+        emb = discord.Embed(title="Painel da fila controladora", description=f"__**Entre na fila para mediar salas**__\n\n{txt}", color=0x2b2d31)
         if bot.user: emb.set_thumbnail(url=bot.user.display_avatar.url)
         return emb
 
     @discord.ui.button(label="Entrar na fila", style=discord.ButtonStyle.green, emoji="🟢", custom_id="persist:med_in")
     async def entrar(self, it, b):
-        if not checar_validade(it.guild.id): return await it.response.send_message("❌ Renova o bot!", ephemeral=True)
         if it.user.id not in fila_mediadores:
             fila_mediadores.append(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
-        else: await it.response.send_message("⚠️ Já estás na fila!", ephemeral=True)
+        else: await it.response.send_message("⚠️ Já está na fila!", ephemeral=True)
 
     @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.danger, emoji="🔴", custom_id="persist:med_out")
     async def sair(self, it, b):
@@ -139,7 +133,7 @@ class ViewFila(View):
         self.users.append((it.user, gelo))
         if len(self.users) == 2:
             p1, p2 = self.users[0][0], self.users[1][0]; self.users = []
-            if not fila_mediadores: return await it.response.send_message("❌ Sem mediadores disponíveis!", ephemeral=True)
+            if not fila_mediadores: return await it.response.send_message("❌ Sem mediadores!", ephemeral=True)
             med_id = fila_mediadores.pop(0); fila_mediadores.append(med_id)
             c_id = pegar_config("canal_1"); canal = bot.get_channel(int(c_id)) if c_id else it.channel
             th = await canal.create_thread(name=f"confirmar-{self.valor}", type=discord.ChannelType.public_thread)
@@ -161,14 +155,11 @@ class ViewConfig(View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Validade (Dono)", style=discord.ButtonStyle.success, custom_id="persist:cfg_val")
     async def validade(self, it, b):
-        if it.user.id != OWNER_ID: return await it.response.send_message("⛔ Apenas o Dono!", ephemeral=True)
+        if it.user.id != OWNER_ID: return await it.response.send_message("⛔ Acesso Negado!", ephemeral=True)
         class MVal(Modal, title="Configurar Licença"):
-            d = TextInput(label="Quantidade"); t = TextInput(label="Tipo (dias/horas/meses)")
+            d = TextInput(label="Quantidade de Dias"); t = TextInput(label="Confirmar (digite 'dia')")
             async def on_submit(self, i):
-                qtd = int(self.d.value); t_str = self.t.value.lower(); now = datetime.now()
-                if "min" in t_str: exp = now + timedelta(minutes=qtd)
-                elif "dia" in t_str: exp = now + timedelta(days=qtd)
-                else: exp = now + timedelta(days=qtd*30)
+                exp = datetime.now() + timedelta(days=int(self.d.value))
                 db_execute("INSERT OR REPLACE INTO validade VALUES (?,?)", (i.guild.id, exp.strftime("%Y-%m-%d %H:%M:%S")))
                 await i.response.send_message(f"✅ Válido até {exp.strftime('%d/%m/%Y %H:%M')}", ephemeral=True)
         await it.response.send_modal(MVal())
@@ -183,29 +174,28 @@ bot = MyBot(); fila_mediadores = []; partidas_ativas = {}; temp_dados = {}
 
 @bot.command()
 async def Pix(ctx):
-    if not checar_validade(ctx.guild.id): return await ctx.send("❌ Renova o bot!")
-    emb = discord.Embed(title="Painel Para Configurar Chave PIX", description="Gerencie a chave PIX utilizada nas suas filas.", color=0x2b2d31)
+    if not checar_validade(ctx.guild.id): return await ctx.send("❌ Renove o bot!")
+    emb = discord.Embed(title="Painel Para Configurar Chave PIX", description="Gerencie a chave PIX utilizada nas suas filas.\n\nSelecione uma das opções abaixo.", color=0x2b2d31)
     emb.set_thumbnail(url=bot.user.display_avatar.url); await ctx.send(embed=emb, view=VPix())
 
 @bot.command()
 async def mediar(ctx):
-    if not checar_validade(ctx.guild.id): return await ctx.send("❌ Renova o bot!")
-    view = VMed(); await ctx.send(embed=view.gerar_embed(), view=view)
+    if not checar_validade(ctx.guild.id): return await ctx.send("❌ Renove o bot!")
+    await ctx.send(embed=VMed().gerar_embed(), view=VMed())
 
 @bot.command()
 async def fila(ctx, modo, valor):
-    if not checar_validade(ctx.guild.id): return await ctx.send("❌ Renova o bot!")
+    if not checar_validade(ctx.guild.id): return await ctx.send("❌ Renove o bot!")
     await ctx.send(embed=ViewFila(modo, valor).gerar_embed(), view=ViewFila(modo, valor))
 
 @bot.command()
 async def botconfig(ctx):
     if ctx.author.id == OWNER_ID or ctx.author.guild_permissions.administrator:
-        await ctx.send("⚙️ **Configuração do Sistema**", view=ViewConfig())
+        await ctx.send("⚙️ **Configurações Gerais**", view=ViewConfig())
 
 @bot.command()
 async def aux(ctx):
-    if not await tem_permissao(ctx, "cmd_aux"): return
-    emb = discord.Embed(title="📖 Guia Rápido", description="1. `.mediar` para entrar na fila.\n2. No tópico, confirma o pagamento.\n3. Envia ID e Senha no chat.", color=0x3498db)
+    emb = discord.Embed(title="📖 Guia de Operação", description="1. `.mediar` para entrar na fila.\n2. No tópico, confirme ou recuse.\n3. Envie ID e depois Senha no chat.", color=0x3498db)
     await ctx.send(embed=emb)
 
 @bot.event
@@ -216,7 +206,7 @@ async def on_message(msg):
         if msg.author.id == d['med'] and msg.content.isdigit():
             if msg.channel.id not in temp_dados:
                 temp_dados[msg.channel.id] = msg.content; await msg.delete()
-                await msg.channel.send("✅ ID salvo. Envia a **Senha** agora.", delete_after=2)
+                await msg.channel.send("✅ ID salvo. Envie a **Senha**.", delete_after=2)
             else:
                 s = msg.content; id_s = temp_dados.pop(msg.channel.id); await msg.delete()
                 v_n = float(d['valor'].replace(',','.')) * 2
@@ -226,4 +216,4 @@ async def on_message(msg):
     await bot.process_commands(msg)
 
 bot.run(TOKEN)
-                                                                                                                
+                           
