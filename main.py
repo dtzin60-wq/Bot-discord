@@ -108,18 +108,19 @@ class ViewFilaControladora(View):
 # ================= FILA DE APOSTA (JOGADORES) =================
 
 class ViewFilaAposta(View):
-    def __init__(self, chave, valor):
-        super().__init__(timeout=None); self.chave = chave; self.valor = valor
+    def __init__(self, chave, valor, modo_nome):
+        super().__init__(timeout=None)
+        self.chave = chave
+        self.valor = valor
+        self.modo_nome = modo_nome
 
     async def atualizar(self, msg):
         lista = filas_partida.get(self.chave, [])
         jogadores_str = "\n".join([f"{u.mention} - {m}" for u, m in lista]) if lista else "Vazio"
-        
-        # AQUI A MUDANÇA: Substituindo ponto por vírgula no valor
         valor_formatado = f"{self.valor:.2f}".replace(".", ",")
         
         embed = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71)
-        embed.add_field(name="🕹️ Modo", value="`1v1-mobile`", inline=False)
+        embed.add_field(name="🕹️ Modo", value=f"`{self.modo_nome}`", inline=False)
         embed.add_field(name="Valor", value=f"R$ {valor_formatado}", inline=False)
         embed.add_field(name="Jogadores na Fila", value=jogadores_str, inline=False)
         embed.set_image(url=BANNER_URL)
@@ -153,10 +154,10 @@ class ViewFilaAposta(View):
             
             canal = bot.get_channel(int(canal_id))
             thread = await canal.create_thread(name=f"⚔️-{p1.name}-vs-{p2.name}")
-            partidas_ativas[thread.id] = {"jogadores": [p1, p2], "confirmados": [], "mediador_id": med_id, "modo": modo}
+            partidas_ativas[thread.id] = {"jogadores": [p1, p2], "confirmados": [], "mediador_id": med_id, "modo": self.modo_nome}
             
             emb = discord.Embed(title="Aguardando Confirmação", color=0x2ecc71)
-            emb.add_field(name="🕹️ Modo", value=f"1v1-mobile | {modo}", inline=False)
+            emb.add_field(name="🕹️ Modo", value=f"{self.modo_nome} | {modo}", inline=False)
             emb.add_field(name="👮 Mediador", value=f"<@{med_id}>", inline=False)
             emb.add_field(name="⚡ Jogadores", value=f"{p1.mention}\n{p2.mention}", inline=False)
             
@@ -260,12 +261,16 @@ async def mediar(ctx):
     v = ViewFilaControladora(); await ctx.send(embed=await v.gerar_embed(), view=v)
 
 @bot.command()
-async def fila(ctx, v: str):
-    val = float(v.replace(",", ".")); view = ViewFilaAposta(f"f_{val}", val)
-    # Formatação do valor para exibição inicial
+async def fila(ctx, v: str, modo: str = "1v1-mobile"):
+    try:
+        val = float(v.replace(",", "."))
+    except ValueError:
+        return await ctx.send("❌ Use um valor numérico válido. Ex: `.fila 10` ou `.fila 10 emulador`")
+    
+    view = ViewFilaAposta(f"f_{val}_{modo}", val, modo)
     val_txt = f"{val:.2f}".replace(".", ",")
     emb = discord.Embed(title="🎮 WS APOSTAS", color=0x2ecc71).set_image(url=BANNER_URL)
-    emb.add_field(name="🕹️ Modo", value="`1v1-mobile`", inline=False)
+    emb.add_field(name="🕹️ Modo", value=f"`{modo}`", inline=False)
     emb.add_field(name="Valor", value=f"R$ {val_txt}", inline=False)
     emb.add_field(name="Jogadores na Fila", value="Vazio", inline=False)
     await ctx.send(embed=emb, view=view)
@@ -300,4 +305,4 @@ async def canal(ctx):
 async def on_ready(): init_db(); print(f"✅ {bot.user} Online")
 
 bot.run(TOKEN)
-                                     
+    
