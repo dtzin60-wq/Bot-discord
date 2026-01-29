@@ -5,9 +5,12 @@ import sqlite3
 import os
 import random
 import re
+import asyncio
 
 # ================= CONFIGURAÇÕES =================
-TOKEN = "SEU_TOKEN_AQUI"
+# O bot vai tentar ler do Railway. Se não encontrar, você pode colar entre as aspas:
+TOKEN = os.getenv("DISCORD_TOKEN") or "COLE_SEU_TOKEN_AQUI_SE_NAO_USAR_RAILWAY_VARIABLES"
+
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 LOGO_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/LOGO_ROXA.png" 
 
@@ -53,12 +56,6 @@ async def tem_permissao(it, chave):
 
 # ================= SISTEMA AUXILIAR (.AUX) =================
 
-class ViewVitoria(View):
-    def __init__(self, jogadores, tipo="vitória"):
-        super().__init__(timeout=60)
-        for j in jogadores:
-            self.add_item(ButtonVencedor(j, tipo))
-
 class ButtonVencedor(Button):
     def __init__(self, membro, tipo):
         super().__init__(label=f"{membro.name}", style=discord.ButtonStyle.blurple)
@@ -72,6 +69,12 @@ class ButtonVencedor(Button):
         await it.response.send_message(embed=emb)
         self.view.stop()
 
+class ViewVitoria(View):
+    def __init__(self, jogadores, tipo="vitória"):
+        super().__init__(timeout=60)
+        for j in jogadores:
+            self.add_item(ButtonVencedor(j, tipo))
+
 class ViewAux(View):
     def __init__(self, thread_id):
         super().__init__(timeout=None)
@@ -81,14 +84,14 @@ class ViewAux(View):
     async def vitoria(self, it, btn):
         if not await tem_permissao(it, "perm_aux"): return await it.response.send_message("Sem permissão.", ephemeral=True)
         dados = partidas_ativas.get(self.thread_id)
-        if not dados: return await it.response.send_message("Partida não encontrada.", ephemeral=True)
+        if not dados: return await it.response.send_message("Dados da partida não encontrados.", ephemeral=True)
         await it.response.send_message("Selecione o vencedor:", view=ViewVitoria(dados['jogadores'], "vitoria"), ephemeral=True)
 
     @discord.ui.button(label="Dar Vitória por W.O", style=discord.ButtonStyle.gray)
     async def wo(self, it, btn):
         if not await tem_permissao(it, "perm_aux"): return await it.response.send_message("Sem permissão.", ephemeral=True)
         dados = partidas_ativas.get(self.thread_id)
-        if not dados: return await it.response.send_message("Partida não encontrada.", ephemeral=True)
+        if not dados: return await it.response.send_message("Dados da partida não encontrados.", ephemeral=True)
         await it.response.send_message("Selecione quem ganhou por W.O:", view=ViewVitoria(dados['jogadores'], "wo"), ephemeral=True)
 
     @discord.ui.button(label="Finalizar Aposta", style=discord.ButtonStyle.red)
@@ -99,26 +102,34 @@ class ViewAux(View):
         await asyncio.sleep(2)
         await it.channel.edit(archived=True, locked=True)
 
+# ================= COMANDOS E FILA =================
+
+@bot.command()
+async def botconfig(ctx):
+    if not ctx.author.guild_permissions.administrator: return
+    class V(View):
+        @discord.ui.select(cls=RoleSelect, placeholder="Quem pode dar .aux", row=0)
+        async def s1(self, it, sel): salvar_config("perm_aux", sel.values[0].id); await it.response.send_message("✅ Configurado", ephemeral=True)
+        @discord.ui.select(cls=RoleSelect, placeholder="Quem usa comandos", row=1)
+        async def s2(self, it, sel): salvar_config("perm_geral", sel.values[0].id); await it.response.send_message("✅ Configurado", ephemeral=True)
+        @discord.ui.select(cls=RoleSelect, placeholder="Quem cadastra Pix", row=2)
+        async def s3(self, it, sel): salvar_config("perm_pix", sel.values[0].id); await it.response.send_message("✅ Configurado", ephemeral=True)
+        @discord.ui.select(cls=RoleSelect, placeholder="Quem é Mediador", row=3)
+        async def s4(self, it, sel): salvar_config("perm_mediador", sel.values[0].id); await it.response.send_message("✅ Configurado", ephemeral=True)
+    await ctx.send("⚙️ Configuração de Cargos", view=V())
+
 @bot.command()
 async def aux(ctx):
-    if not isinstance(ctx.channel, discord.Thread):
-        return await ctx.send("❌ Este comando só pode ser usado dentro de um tópico de partida.")
-    
-    # Checa permissão
-    cargo_id = puxar_config("perm_aux")
-    if not ctx.author.guild_permissions.administrator:
-        if not cargo_id or not any(r.id == int(cargo_id) for r in ctx.author.roles):
-            return await ctx.send("❌ Você não tem permissão para usar o `.aux`.")
+    if not isinstance(ctx.channel, discord.Thread): return await ctx.send("Use dentro do tópico!")
+    if not await tem_permissao(FakeIt(ctx.author), "perm_aux"): return await ctx.send("Sem permissão.")
+    await ctx.send(embed=discord.Embed(title="🛠️ Painel Auxiliar", color=0x2b2d31), view=ViewAux(ctx.channel.id))
 
-    embed = discord.Embed(title="🛠️ Painel Auxiliar de Partida", description="Escolha uma das opções abaixo para gerenciar esta partida.", color=0x2b2d31)
-    await ctx.send(embed=embed, view=ViewAux(ctx.channel.id))
-
-# ================= LÓGICA DE CRIAÇÃO E MONITORAMENTO =================
+class FakeIt: # Auxiliar para checar permissão em comandos de prefixo
+    def __init__(self, user): self.user = user
 
 @bot.event
 async def on_message(message):
     if message.author.bot: return
-    # Detecta ID e Senha no tópico
     if isinstance(message.channel, discord.Thread) and message.channel.id in partidas_ativas:
         nums = re.findall(r'\d+', message.content)
         if len(nums) >= 2:
@@ -129,10 +140,9 @@ async def on_message(message):
             e.description = f"**🕹️ Modo:** `{d['modo']}`\n**💰 Valor:** `R$ {d['valor']}`\n**👥 Jogadores:** {d['jogadores'][0].mention} vs {d['jogadores'][1].mention}\n\n🆔 **ID:** `{nums[0]}`\n🔑 **SENHA:** `{nums[1]}`"
             e.set_image(url=BANNER_URL)
             await message.channel.send(embed=e)
-            # NÃO deletamos de partidas_ativas aqui para o .aux continuar funcionando!
     await bot.process_commands(message)
 
-# ================= CRIAÇÃO DO TÓPICO (AJUSTADO) =================
+# ================= CRIAÇÃO E TÓPICOS =================
 
 class ViewConfirmacao(View):
     def __init__(self, p1, p2, med_id, valor, modo, fila_view, original_msg):
@@ -154,29 +164,10 @@ class ViewConfirmacao(View):
             validos = [c for c in canais if c]
             canal_sorteado = bot.get_channel(int(random.choice(validos)))
             thread = await canal_sorteado.create_thread(name="Aguardando-confirmaçao", type=discord.ChannelType.public_thread)
-            
-            # SALVA OS DADOS PARA O .AUX FUNCIONAR DEPOIS
             partidas_ativas[thread.id] = {"jogadores": [self.p1, self.p2], "med": self.med_id, "valor": val_f, "modo": self.modo}
-            
-            emb_pix = discord.Embed(title="Pagamento", description=f"💰 Valor: **R$ {val_f}**\n👤 Mediador: <@{self.med_id}>", color=0x2ecc71)
-            await thread.send(content=f"{self.p1.mention} vs {self.p2.mention} | <@{self.med_id}>", embed=emb_pix)
+            await thread.send(content=f"{self.p1.mention} vs {self.p2.mention} | <@{self.med_id}>", embed=discord.Embed(title="Pagamento", description=f"💰 Valor: **R$ {val_f}**\n👤 Mediador: <@{self.med_id}>", color=0x2ecc71))
             await it.edit_original_response(content=f"✅ Tópico: {thread.mention}", embed=None, view=None)
             filas_partida[self.fila_view.chave] = []; await self.fila_view.atualizar(self.original_msg)
-
-# ================= COMANDOS RESTANTES =================
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def botconfig(ctx):
-    class V(View):
-        @discord.ui.select(cls=RoleSelect, placeholder="Quem pode dar .aux", row=0)
-        async def s1(self, it, sel): salvar_config("perm_aux", sel.values[0].id); await it.response.send_message("✅", ephemeral=True)
-        @discord.ui.select(cls=RoleSelect, placeholder="Quem pode usar comandos", row=1)
-        async def s2(self, it, sel): salvar_config("perm_geral", sel.values[0].id); await it.response.send_message("✅", ephemeral=True)
-        @discord.ui.select(cls=RoleSelect, placeholder="Quem pode cadastrar Pix", row=2)
-        async def s3(self, it, sel): salvar_config("perm_pix", sel.values[0].id); await it.response.send_message("✅", ephemeral=True)
-        @discord.ui.select(cls=RoleSelect, placeholder="Quem pode ser Mediador", row=3)
-        async def s4(self, it, sel): salvar_config("perm_mediador", sel.values[0].id); await it.response.send_message("✅", ephemeral=True)
-    await ctx.send("⚙️ Configurações de Cargos", view=V())
 
 @bot.command()
 async def fila(ctx, v: str, *, modo: str = "1v1"):
@@ -195,17 +186,46 @@ async def fila(ctx, v: str, *, modo: str = "1v1"):
             e.set_image(url=BANNER_URL); await msg.edit(embed=e, view=self)
         @discord.ui.button(label="Gelo normal", style=discord.ButtonStyle.gray)
         async def g1(self, it, b):
+            if not fila_mediadores: return await it.response.send_message("Sem mediadores!", ephemeral=True)
             if self.chave not in filas_partida: filas_partida[self.chave] = []
             l = filas_partida[self.chave]
+            if any(x[0].id == it.user.id for x in l): return await it.response.send_message("Já está!", ephemeral=True)
             l.append((it.user, "gelo normal"))
             if len(l) == 2:
                 med_id = fila_mediadores.pop(0); fila_mediadores.append(med_id)
                 await it.response.send_message(view=ViewConfirmacao(l[0][0], l[1][0], med_id, self.valor, self.modo, self, it.message))
-            else: await it.response.send_message("Entrou!", ephemeral=True); await self.atualizar(it.message)
-    v = VF(f"f_{ctx.message.id}", val, modo)
-    await ctx.send(embed=discord.Embed(title="🎮"), view=v)
+            else: await self.atualizar(it.message)
+    await ctx.send(embed=discord.Embed(title="🎮"), view=VF(f"f_{ctx.message.id}", val, modo))
+
+@bot.command()
+async def pix(ctx):
+    class VP(View):
+        @discord.ui.button(label="Chave pix", style=discord.ButtonStyle.green, emoji="💠")
+        async def c(self, it, b):
+            class M(Modal, title="Configurar PIX"):
+                n = TextInput(label="Titular"); c = TextInput(label="Chave")
+                async def on_submit(self, m_it):
+                    db_execute("INSERT OR REPLACE INTO pix VALUES (?,?,?)", (m_it.user.id, self.n.value, self.c.value))
+                    await m_it.response.send_message("✅ Salvo!", ephemeral=True)
+            await it.response.send_modal(M())
+    await ctx.send("Painel PIX", view=VP())
+
+@bot.command()
+async def mediar(ctx):
+    class VM(View):
+        async def gerar(self):
+            lista = "".join([f"• <@{uid}>\n" for uid in fila_mediadores]) if fila_mediadores else "Vazio"
+            return discord.Embed(title="Fila de Mediadores", description=lista, color=0x2b2d31)
+        @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green)
+        async def e(self, it, b):
+            if it.user.id not in fila_mediadores: fila_mediadores.append(it.user.id)
+            await it.response.edit_message(embed=await self.gerar())
+    v = VM(); await ctx.send(embed=await v.gerar(), view=v)
 
 @bot.event
-async def on_ready(): init_db(); print(f"✅ {bot.user} Online")
+async def on_ready(): 
+    init_db()
+    print(f"✅ {bot.user} está Online e Pronto!")
+
 bot.run(TOKEN)
-                                                               
+        
