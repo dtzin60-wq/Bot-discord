@@ -70,7 +70,37 @@ async def on_message(message):
                 await message.channel.send(content=f"<@{dados['p1']}> <@{dados['p2']}>", embed=emb)
     await bot.process_commands(message)
 
-# ================= LÓGICA DO TÓPICO (PAINEL DE CONFIRMAÇÃO DA FOTO) =================
+# ================= COMANDO .PIX (COMPLETO) =================
+@bot.command()
+async def Pix(ctx):
+    class VPix(View):
+        @discord.ui.button(label="Cadastrar Dados Pix", style=discord.ButtonStyle.green, emoji="💠")
+        async def p(self, it, b):
+            class MPix(Modal, title="Configurar PIX"):
+                n = TextInput(label="Nome do titular da conta", placeholder="Nome Completo")
+                c = TextInput(label="Chave Pix", placeholder="Sua chave aqui")
+                q = TextInput(label="QR Code (Link da Imagem)", placeholder="https://link-da-imagem.png", required=False)
+                async def on_submit(self, i):
+                    db_execute("INSERT OR REPLACE INTO pix VALUES (?,?,?,?)", (i.user.id, self.n.value, self.c.value, self.q.value))
+                    await i.response.send_message("✅ Seus dados Pix e QR Code foram salvos!", ephemeral=True)
+            await it.response.send_modal(MPix())
+
+        @discord.ui.button(label="Ver sua chave Pix", style=discord.ButtonStyle.secondary, emoji="🔍")
+        async def ver(self, it, b):
+            con = sqlite3.connect("dados.db")
+            r = con.execute("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (it.user.id,)).fetchone()
+            con.close()
+            if not r: return await it.response.send_message("❌ Você ainda não cadastrou um Pix.", ephemeral=True)
+            
+            emb = discord.Embed(title="🔍 Seus Dados Cadastrados", color=0x4b0082)
+            emb.add_field(name="👤 Titular", value=r[0], inline=True)
+            emb.add_field(name="💠 Chave", value=f"`{r[1]}`", inline=True)
+            if r[2]: emb.set_image(url=r[2])
+            await it.response.send_message(embed=emb, ephemeral=True)
+
+    await ctx.send(embed=discord.Embed(title="💳 Gerenciamento de Pix", description="Cadastre seus dados ou visualize sua chave atual.", color=0x4b0082), view=VPix())
+
+# ================= LÓGICA DO TÓPICO (CONFIRMAÇÃO DA FOTO) =================
 class ViewTopico(View):
     def __init__(self, p1, p2, med, val, modo):
         super().__init__(timeout=None)
@@ -79,42 +109,30 @@ class ViewTopico(View):
 
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green)
     async def c(self, it, b):
-        if it.user.id not in [self.p1, self.p2]:
-            return await it.response.send_message("❌ Você não está nesta partida!", ephemeral=True)
-        
-        if it.user.id in self.conf:
-            return await it.response.send_message("⚠️ Você já confirmou!", ephemeral=True)
-            
+        if it.user.id not in [self.p1, self.p2]: return
+        if it.user.id in self.conf: return
         self.conf.add(it.user.id)
         
-        # --- PAINEL IGUAL À FOTO ENVIADA ---
-        emb_confirmacao = discord.Embed(
+        # VISUAL IDENTICO AO SOLICITADO
+        emb_status = discord.Embed(
             title="🟩 | Partida Confirmada", 
             description=f"{it.user.mention} confirmou a aposta!\n╰👉 O outro jogador precisa confirmar para continuar.", 
             color=0x2ecc71
         )
-        await it.response.send_message(embed=emb_confirmacao)
+        await it.response.send_message(embed=emb_status)
 
         if len(self.conf) == 2:
-            await asyncio.sleep(2)
-            await it.channel.purge(limit=15)
-            
+            await asyncio.sleep(2); await it.channel.purge(limit=15)
             con = sqlite3.connect("dados.db")
-            r = con.execute("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (self.med,)).fetchone()
-            con.close()
-            
-            # Taxa de 0.10 aplicada automaticamente
+            r = con.execute("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (self.med,)).fetchone(); con.close()
             v_f = f"{(float(self.val.replace(',','.')) + 0.10):.2f}".replace('.',',')
             
-            emb_p = discord.Embed(title="💸 PAGAMENTO AO MEDIADOR", color=0xF1C40F)
-            emb_p.add_field(name="👤 Titular", value=r[0] if r else "Não cadastrado", inline=True)
-            emb_p.add_field(name="💠 Chave Pix", value=f"`{r[1]}`" if r else "Não cadastrada", inline=True)
-            emb_p.add_field(name="💰 Valor Total", value=f"R$ {v_f}", inline=False)
-            
-            if r and r[2]: # Exibe o QR Code se o link for válido
-                emb_p.set_image(url=r[2])
-            
-            await it.channel.send(content=f"<@{self.p1}> <@{self.p2}>", embed=emb_p)
+            emb_pag = discord.Embed(title="💸 PAGAMENTO AO MEDIADOR", color=0xF1C40F)
+            emb_pag.add_field(name="👤 Titular", value=r[0] if r else "N/A", inline=True)
+            emb_pag.add_field(name="💠 Chave Pix", value=f"`{r[1]}`" if r else "N/A", inline=True)
+            emb_pag.add_field(name="💰 Valor Total", value=f"R$ {v_f}", inline=False)
+            if r and r[2]: emb_pag.set_image(url=r[2])
+            await it.channel.send(content=f"<@{self.p1}> <@{self.p2}>", embed=emb_pag)
 
 # ================= COMANDO .FILA =================
 class ViewFila(View):
@@ -134,58 +152,34 @@ class ViewFila(View):
     async def entrar(self, it, gelo):
         if any(u.id == it.user.id for u, g in self.users): return
         self.users.append((it.user, gelo))
-        
         if len(self.users) == 2:
             p1, p2 = self.users[0][0], self.users[1][0]
             self.users = []
-            
-            if not fila_mediadores: 
-                return await it.response.send_message("❌ Sem mediadores online!", ephemeral=True)
-            
+            if not fila_mediadores: return await it.response.send_message("❌ Sem mediadores online!", ephemeral=True)
             med_id = fila_mediadores.pop(0)
             c_id = pegar_config("canal_1")
             canal = bot.get_channel(int(c_id)) if c_id else it.channel
-            
             th = await canal.create_thread(name=f"⚔️-aposta-{self.valor}", type=discord.ChannelType.public_thread)
             partidas_ativas[th.id] = {'modo': f"{self.modo} ({gelo})", 'valor': self.valor, 'p1': p1.id, 'p2': p2.id, 'med': med_id}
             
-            emb_local = discord.Embed(title="⚔️ Partida Localizada", description=f"{p1.mention} vs {p2.mention}\n\nAmbos confirmem abaixo para liberar o PIX.")
-            await th.send(embed=emb_local, view=ViewTopico(p1.id, p2.id, med_id, self.valor, self.modo))
+            emb_loc = discord.Embed(title="⚔️ Partida Localizada", description=f"{p1.mention} vs {p2.mention}", color=0x2b2d31)
+            await th.send(embed=emb_loc, view=ViewTopico(p1.id, p2.id, med_id, self.valor, self.modo))
             await it.response.edit_message(embed=self.gerar_embed())
-        else:
-            await it.response.edit_message(embed=self.gerar_embed())
+        else: await it.response.edit_message(embed=self.gerar_embed())
 
     @discord.ui.button(label="Gelo Normal", style=discord.ButtonStyle.secondary)
     async def b1(self, it, b): await self.entrar(it, "Gelo Normal")
-
     @discord.ui.button(label="Gelo Infinito", style=discord.ButtonStyle.secondary)
     async def b2(self, it, b): await self.entrar(it, "Gelo Infinito")
-
     @discord.ui.button(label="Sair da Fila", style=discord.ButtonStyle.danger)
     async def s(self, it, b):
         self.users = [u for u in self.users if u[0].id != it.user.id]
         await it.response.edit_message(embed=self.gerar_embed())
 
-# ================= COMANDOS DE ADMIN E CONFIG =================
 @bot.command()
-async def fila(ctx, modo, valor):
-    await ctx.send(embed=ViewFila(modo, valor).gerar_embed(), view=ViewFila(modo, valor))
+async def fila(ctx, modo, valor): await ctx.send(embed=ViewFila(modo, valor).gerar_embed(), view=ViewFila(modo, valor))
 
-@bot.command()
-async def Pix(ctx):
-    class VPix(View):
-        @discord.ui.button(label="Cadastrar Dados Pix", style=discord.ButtonStyle.green, emoji="💠")
-        async def p(self, it, b):
-            class MPix(Modal, title="Configurar PIX"):
-                n = TextInput(label="Nome do titular da conta")
-                c = TextInput(label="Chave Pix")
-                q = TextInput(label="QR Code (Link da Imagem)", required=False)
-                async def on_submit(self, i):
-                    db_execute("INSERT OR REPLACE INTO pix VALUES (?,?,?,?)", (i.user.id, self.n.value, self.c.value, self.q.value))
-                    await i.response.send_message("✅ Seus dados foram salvos!", ephemeral=True)
-            await it.response.send_modal(MPix())
-    await ctx.send(embed=discord.Embed(title="💳 Configuração de Pagamento", color=0x4b0082), view=VPix())
-
+# ================= COMANDO .MEDIAR (ONLINE/OFFLINE) =================
 @bot.command()
 async def mediar(ctx):
     class VMed(View):
@@ -196,21 +190,24 @@ async def mediar(ctx):
         async def e(self, it, b):
             if it.user.id not in fila_mediadores: fila_mediadores.append(it.user.id)
             await it.response.edit_message(embed=self.ge())
+        @discord.ui.button(label="Ficar Offline", style=discord.ButtonStyle.red)
+        async def s(self, it, b):
+            if it.user.id in fila_mediadores: fila_mediadores.remove(it.user.id)
+            await it.response.edit_message(embed=self.ge())
     await ctx.send(embed=VMed().ge(), view=VMed())
 
+# ================= SETUP CANAL =================
 @bot.command()
 async def canal(ctx):
     v = View(); sel = ChannelSelect()
     async def cb(i):
         salvar_config("canal_1", sel.values[0].id)
-        await i.response.send_message(f"✅ Canal definido: {sel.values[0].mention}", ephemeral=True)
+        await i.response.send_message(f"✅ Tópicos serão criados em: {sel.values[0].mention}", ephemeral=True)
     sel.callback = cb; v.add_item(sel)
-    await ctx.send("Selecione onde criar os tópicos:", view=v)
+    await ctx.send(embed=discord.Embed(title="📍 Configuração de Canal", description="Escolha o canal onde as apostas serão abertas.", color=0x2b2d31), view=v)
 
 @bot.event
-async def on_ready():
-    init_db()
-    print(f"✅ Bot Online: {bot.user}")
+async def on_ready(): init_db(); print(f"✅ {bot.user} está pronto!")
 
 bot.run(TOKEN)
     
