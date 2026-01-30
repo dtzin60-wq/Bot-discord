@@ -5,7 +5,7 @@ import sqlite3, os, asyncio
 
 # --- CONFIGURAÇÕES ---
 TOKEN = "TEU_TOKEN_AQUI"
-BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
+BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1466833663361548389/Screenshot_2026-01-30-13-32-38-096_com.openai.chatgpt-edit.jpg?ex=697e2ecd&is=697cdd4d&hm=6b49552a201219d4b6fc1048ab8993d5c889675163cca6a58a46bbe5c1a063a5&"
 
 intents = discord.Intents.default()
 intents.message_content = True
