@@ -179,13 +179,13 @@ class ViewFila(View):
         super().__init__(timeout=None)
         self.modo, self.valor, self.jogadores = modo, valor, []
 
-    @discord.ui.button(label="Gelo Normal", style=discord.ButtonStyle.secondary, emoji="")
+    @discord.ui.button(label="Gelo Normal", style=discord.ButtonStyle.secondary, emoji="❄️")
     async def g_normal(self, it, b): await self.adicionar_jogador(it, "Gelo Normal")
     
-    @discord.ui.button(label="Gelo Infinito", style=discord.ButtonStyle.secondary, emoji="")
+    @discord.ui.button(label="Gelo Infinito", style=discord.ButtonStyle.secondary, emoji="♾️")
     async def g_infinito(self, it, b): await self.adicionar_jogador(it, "Gelo Infinito")
 
-    @discord.ui.button(label="Sair da Fila", style=discord.ButtonStyle.danger, emoji="", custom_id="btn_sair_fila_v5")
+    @discord.ui.button(label="Sair da Fila", style=discord.ButtonStyle.danger, emoji="🚪", custom_id="btn_sair_fila_v5")
     async def sair_fila(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Permite que o jogador desista da fila antes da partida formar."""
         self.jogadores = [j for j in self.jogadores if j['id'] != interaction.user.id]
