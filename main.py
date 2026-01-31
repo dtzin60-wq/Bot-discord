@@ -12,7 +12,7 @@ import traceback
 # ==============================================================================
 TOKEN = os.getenv("TOKEN")
 
-# Cores e Imagens (Idênticas aos prints)
+# Cores e Imagens
 COR_EMBED = 0x2b2d31 # Cinza Escuro
 COR_VERDE = 0x2ecc71 # Verde Sucesso
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
@@ -23,7 +23,6 @@ bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
 # Cache
 fila_mediadores = []
-confirmacoes_ativas = []
 
 # ==============================================================================
 #                         BANCO DE DADOS
@@ -33,6 +32,7 @@ def init_db():
         con.execute("CREATE TABLE IF NOT EXISTS pix (user_id INTEGER PRIMARY KEY, nome TEXT, chave TEXT)")
         con.execute("CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)")
         con.execute("CREATE TABLE IF NOT EXISTS pix_saldo (user_id INTEGER PRIMARY KEY, saldo REAL DEFAULT 0.0)")
+        con.execute("CREATE TABLE IF NOT EXISTS restricoes (user_id INTEGER PRIMARY KEY, motivo TEXT)")
 
 def db_exec(query, params=()):
     with sqlite3.connect("ws_database_final.db") as con:
@@ -43,14 +43,14 @@ def db_query(query, params=()):
         return con.execute(query, params).fetchone()
 
 # ==============================================================================
-#                         VIEW: PAINEL PIX (SLASH)
+#                         VIEW: PAINEL PIX (CORRIGIDO)
 # ==============================================================================
 class ViewPainelPix(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    # Botão 1: Chave pix (Verde + Ícone Diamante)
-    @discord.ui.button(label="Chave pix", style=discord.ButtonStyle.success, emoji="❖")
+    # CORREÇÃO AQUI: Troquei o emoji inválido por 💠
+    @discord.ui.button(label="Chave pix", style=discord.ButtonStyle.success, emoji="💠")
     async def btn_cadastrar(self, interaction: discord.Interaction, button: Button):
         modal = Modal(title="Cadastrar Chave PIX")
         nome = TextInput(label="Nome Completo", placeholder="Digite seu nome...")
@@ -65,7 +65,6 @@ class ViewPainelPix(View):
         modal.on_submit = on_submit
         await interaction.response.send_modal(modal)
 
-    # Botão 2: Sua Chave (Verde + Lupa)
     @discord.ui.button(label="Sua Chave", style=discord.ButtonStyle.success, emoji="🔍")
     async def btn_ver_sua(self, interaction: discord.Interaction, button: Button):
         dados = db_query("SELECT nome, chave FROM pix WHERE user_id=?", (interaction.user.id,))
@@ -74,7 +73,6 @@ class ViewPainelPix(View):
         else:
             await interaction.response.send_message("❌ Você não tem chave cadastrada.", ephemeral=True)
 
-    # Botão 3: Ver Chave de Mediador (Cinza + Lupa)
     @discord.ui.button(label="Ver Chave de Mediador", style=discord.ButtonStyle.secondary, emoji="🔍")
     async def btn_ver_mediador(self, interaction: discord.Interaction, button: Button):
         view = View()
@@ -93,7 +91,7 @@ class ViewPainelPix(View):
         await interaction.response.send_message("Selecione o mediador abaixo:", view=view, ephemeral=True)
 
 # ==============================================================================
-#                         VIEW: FILAS E CONFIRMAÇÃO
+#                         VIEW: CONFIRMAÇÃO DA PARTIDA
 # ==============================================================================
 class ViewConfirmacao(View):
     def __init__(self, jogadores, med_id, valor):
@@ -105,12 +103,15 @@ class ViewConfirmacao(View):
 
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success)
     async def confirmar(self, it: discord.Interaction, btn: Button):
-        if it.user.id not in [j['id'] for j in self.jogadores]: return
-        if it.user.id in self.confirms: return await it.response.send_message("Já confirmado.", ephemeral=True)
+        # Verifica se é jogador
+        if it.user.id not in [j['id'] for j in self.jogadores]: 
+            return await it.response.send_message("Você não está jogando.", ephemeral=True)
+        
+        if it.user.id in self.confirms: 
+            return await it.response.send_message("Já confirmado.", ephemeral=True)
         
         self.confirms.append(it.user.id)
         
-        # Embed de Feedback
         emb = discord.Embed(color=COR_VERDE)
         emb.set_author(name="| Partida Confirmada", icon_url="https://cdn-icons-png.flaticon.com/512/148/148767.png")
         emb.description = f"**{it.user.mention} confirmou a aposta!**\n↳ O outro jogador precisa confirmar para continuar."
@@ -121,18 +122,22 @@ class ViewConfirmacao(View):
             emb_start = discord.Embed(title="✅ SESSÃO INICIADA", color=COR_VERDE)
             emb_start.description = f"Mediador: <@{self.med_id}>\nJogadores: {' '.join([j['m'] for j in self.jogadores])}"
             await it.channel.send(content=f"<@{self.med_id}>", embed=emb_start)
+            # Add comissão
             db_exec("INSERT OR REPLACE INTO pix_saldo (user_id, saldo) VALUES (?, COALESCE((SELECT saldo FROM pix_saldo WHERE user_id=?), 0) + 0.10)", (self.med_id, self.med_id))
 
     @discord.ui.button(label="Recusar", style=discord.ButtonStyle.danger)
     async def recusar(self, it: discord.Interaction, btn: Button):
         if it.user.id in [j['id'] for j in self.jogadores]:
-            await it.channel.send("🚫 Partida recusada e cancelada.")
-            await it.channel.delete()
+            await it.channel.send("🚫 Partida recusada.")
+            await it.channel.edit(locked=True, archived=True)
 
     @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.secondary, emoji="🏳️")
     async def regras(self, it: discord.Interaction, btn: Button):
         await it.response.send_message(f"🏳️ {it.user.mention} quer combinar regras.", ephemeral=False)
 
+# ==============================================================================
+#                         VIEW: FILA PRINCIPAL
+# ==============================================================================
 class ViewFila(View):
     def __init__(self, modo, valor):
         super().__init__(timeout=None)
@@ -166,6 +171,7 @@ class ViewFila(View):
         if not self.jogadores: lista.append("*Aguardando...*")
         else:
             for p in self.jogadores:
+                # Exibe o tipo de gelo na lista
                 extra = f" - {p['t']}" if p['t'] else ""
                 lista.append(f"👤 {p['m']}{extra}")
         
@@ -175,6 +181,7 @@ class ViewFila(View):
 
     async def join(self, it: discord.Interaction, tipo):
         if any(j['id'] == it.user.id for j in self.jogadores): return await it.response.send_message("Já está na fila.", ephemeral=True)
+        
         self.jogadores.append({'id': it.user.id, 'm': it.user.mention, 't': tipo})
         await it.response.edit_message(embed=self.embed())
         
@@ -184,12 +191,11 @@ class ViewFila(View):
             med = fila_mediadores.pop(0); fila_mediadores.append(med)
             
             cnf = db_query("SELECT valor FROM config WHERE chave='canal_th'")
-            if not cnf: return await it.channel.send("❌ Canal não configurado.")
+            if not cnf: return await it.channel.send("❌ Configure o canal com .canal_fila")
             ch = bot.get_channel(int(cnf[0]))
             
             th = await ch.create_thread(name=f"Sessão-{self.valor}", type=discord.ChannelType.public_thread)
             
-            # Embed da Thread (Imagem 1 e 2)
             emb_th = discord.Embed(title="Aguardando Confirmações", color=COR_VERDE)
             emb_th.set_thumbnail(url=ICONE_ORG)
             emb_th.add_field(name="👑 Modo:", value=f"```{self.modo} | {tipo if tipo else 'Padrão'}```", inline=False)
@@ -205,17 +211,15 @@ class ViewFila(View):
         await it.response.edit_message(embed=self.embed())
 
 # ==============================================================================
-#                         COMANDOS SLASH E PREFIXO
+#                         COMANDOS
 # ==============================================================================
 
 @bot.tree.command(name="pix", description="Gerencie sua chave PIX")
 async def slash_pix(interaction: discord.Interaction):
-    """COMANDO PIX CORRIGIDO"""
     try:
-        # 1. Avisa que está pensando imediatamente (evita timeout)
+        # 1. DEFER: Evita timeout do Discord
         await interaction.response.defer(ephemeral=False)
         
-        # 2. Cria o Embed Visual (Imagem 5)
         emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED)
         emb.description = (
             "Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
@@ -223,19 +227,12 @@ async def slash_pix(interaction: discord.Interaction):
         )
         emb.set_thumbnail(url=ICONE_ORG)
         
-        # 3. Envia a resposta final
+        # 2. FOLLOWUP: Envia a mensagem segura
         await interaction.followup.send(embed=emb, view=ViewPainelPix())
         
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Erro ao carregar painel: {e}", ephemeral=True)
-        traceback.print_exc()
-
-@bot.command()
-async def sync(ctx):
-    """Força a sincronização dos comandos slash"""
-    if ctx.author.guild_permissions.administrator:
-        fmt = await ctx.bot.tree.sync()
-        await ctx.send(f"Sincronizados {len(fmt)} comandos.")
+        print(f"Erro: {e}")
+        await interaction.followup.send("Erro ao carregar painel.", ephemeral=True)
 
 @bot.command()
 async def mediar(ctx):
@@ -286,7 +283,7 @@ async def canal_fila(ctx):
 async def on_ready():
     init_db()
     await bot.tree.sync()
-    print("WS FINAL ONLINE")
+    print("WS FINAL ONLINE - COM EMOJI CORRIGIDO")
 
 if TOKEN: bot.run(TOKEN)
-    
+        
