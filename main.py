@@ -6,6 +6,7 @@ import sqlite3
 import os
 import datetime
 import asyncio
+import traceback # Para log de erros detalhado
 
 # ==============================================================================
 #                         CONFIGURAÇÕES E ESTÉTICA
@@ -49,14 +50,17 @@ def db_query(query, params=()):
         return con.execute(query, params).fetchone()
 
 # ==============================================================================
-#               PAINEL PIX (RÉPLICA EXATA DA IMAGEM)
+#               1. DEFINIÇÃO DAS VIEWS (PAINÉIS) - PRIMEIRO LUGAR
 # ==============================================================================
 
 class ViewPainelPix(View):
+    """
+    Painel de botões do comando /pix.
+    Definido aqui em cima para garantir que o comando slash o encontre.
+    """
     def __init__(self):
         super().__init__(timeout=None)
 
-    # Botão 1: Chave pix (Verde)
     @discord.ui.button(label="Chave pix", style=discord.ButtonStyle.success, emoji="❖")
     async def btn_chave_pix(self, interaction: discord.Interaction, button: Button):
         modal = Modal(title="Cadastrar Chave PIX")
@@ -72,7 +76,6 @@ class ViewPainelPix(View):
         modal.on_submit = on_submit
         await interaction.response.send_modal(modal)
 
-    # Botão 2: Sua Chave (Verde)
     @discord.ui.button(label="Sua Chave", style=discord.ButtonStyle.success, emoji="🔍")
     async def btn_sua_chave(self, interaction: discord.Interaction, button: Button):
         res = db_query("SELECT nome, chave FROM pix WHERE user_id=?", (interaction.user.id,))
@@ -81,7 +84,6 @@ class ViewPainelPix(View):
         else:
             await interaction.response.send_message("❌ Nenhuma chave cadastrada.", ephemeral=True)
 
-    # Botão 3: Ver Chave de Mediador (Cinza)
     @discord.ui.button(label="Ver Chave de Mediador", style=discord.ButtonStyle.secondary, emoji="🔍")
     async def btn_ver_chave(self, interaction: discord.Interaction, button: Button):
         view_s = View()
@@ -96,30 +98,6 @@ class ViewPainelPix(View):
         view_s.add_item(sel)
         await interaction.response.send_message("Selecione o mediador:", view=view_s, ephemeral=True)
 
-@bot.tree.command(name="pix", description="Gerencie sua chave PIX")
-async def slash_pix(interaction: discord.Interaction):
-    """
-    Comando Slash com o visual EXATO da imagem enviada.
-    """
-    try:
-        await interaction.response.defer(ephemeral=False)
-        
-        # Título e Descrição copiados da imagem
-        emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED_PADRAO)
-        emb.description = (
-            "Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
-            "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX."
-        )
-        # Ícone da ORG no canto superior direito (thumbnail)
-        emb.set_thumbnail(url=ICONE_ORG)
-        
-        await interaction.followup.send(embed=emb, view=ViewPainelPix())
-    except Exception as e:
-        print(f"Erro no slash pix: {e}")
-
-# ==============================================================================
-#               SISTEMA DE APOSTA (RESTANTE DO CÓDIGO)
-# ==============================================================================
 class ViewConfirmacaoThread(View):
     def __init__(self, modo, valor, jogadores, mediador_id):
         super().__init__(timeout=None)
@@ -305,6 +283,34 @@ class ViewPainelMediar(View):
         if interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("Log Staff (Vazio).", ephemeral=True)
 
+# ==============================================================================
+#               2. COMANDOS (AGORA QUE AS VIEWS EXISTEM)
+# ==============================================================================
+
+@bot.tree.command(name="pix", description="Gerencie sua chave PIX")
+async def slash_pix(interaction: discord.Interaction):
+    """
+    Comando Slash com proteção de erro e deferimento.
+    """
+    try:
+        # Aumenta o tempo limite de resposta
+        await interaction.response.defer(ephemeral=False)
+        
+        emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED_PADRAO)
+        emb.description = (
+            "Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
+            "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX."
+        )
+        emb.set_thumbnail(url=ICONE_ORG)
+        
+        # Como usamos defer, usamos followup.send
+        await interaction.followup.send(embed=emb, view=ViewPainelPix())
+        print(f"Comando /pix executado por {interaction.user}")
+
+    except Exception as e:
+        print(f"Erro CRÍTICO no /pix: {e}")
+        traceback.print_exc()
+
 @bot.command()
 async def mediar(ctx):
     if ctx.author.guild_permissions.manage_messages:
@@ -343,7 +349,7 @@ async def on_ready():
     init_db()
     try:
         synced = await bot.tree.sync()
-        print(f"Sincronizados {len(synced)} comandos slash.")
+        print(f"Sincronizados {len(synced)} comandos slash com sucesso.")
     except Exception as e:
         print(f"Erro ao sincronizar comandos: {e}")
     print("WS SYSTEM - OPERACIONAL")
