@@ -9,23 +9,15 @@ import datetime
 import sys
 
 # ==============================================================================
-#                               SISTEMA DE LOGS
+#                               SISTEMA DE LOGS E STATS
 # ==============================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s:%(levelname)s:%(name)s: %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('discord')
 
-# ==============================================================================
-#                               CONFIGURAÇÕES
-# ==============================================================================
 TOKEN = os.getenv("TOKEN")
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 FOTO_BONECA = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 
-# ATENÇÃO: As 3 chaves de Intents devem estar ligadas no Portal do Desenvolvedor
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -33,13 +25,14 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# Estados Globais
+# Estados Globais e Variáveis de Controle
 fila_mediadores = []
 partidas_ativas = {}
 temp_dados_sala = {}
+manutencao_ativa = False # Novo: Sistema de bloqueio global
 
 # ==============================================================================
-#                               BANCO DE DADOS
+#                               BANCO DE DADOS (EXTENDIDO)
 # ==============================================================================
 def init_db():
     with sqlite3.connect("dados_bot.db") as con:
@@ -49,6 +42,11 @@ def init_db():
             chave TEXT,
             qrcode TEXT,
             partidas_feitas INTEGER DEFAULT 0
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS blacklist (
+            user_id INTEGER PRIMARY KEY,
+            motivo TEXT,
+            data TEXT
         )""")
         con.execute("""CREATE TABLE IF NOT EXISTS config (
             chave TEXT PRIMARY KEY,
@@ -60,6 +58,11 @@ def db_execute(query, params=()):
     with sqlite3.connect("dados_bot.db") as con:
         con.execute(query, params)
         con.commit()
+
+def usuario_banido(user_id):
+    with sqlite3.connect("dados_bot.db") as con:
+        r = con.execute("SELECT 1 FROM blacklist WHERE user_id=?", (user_id,)).fetchone()
+        return True if r else False
 
 def pegar_config(chave):
     with sqlite3.connect("dados_bot.db") as con:
@@ -77,10 +80,12 @@ class ViewPix(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Cadastrar Minha Chave", style=discord.ButtonStyle.green, emoji="💠", custom_id="v18_cad")
+    @discord.ui.button(label="Cadastrar Minha Chave", style=discord.ButtonStyle.green, emoji="💠", custom_id="v20_cad")
     async def cadastrar(self, interaction: discord.Interaction, button: Button):
+        if manutencao_ativa: return await interaction.response.send_message("🚧 Bot em manutenção!", ephemeral=True)
+        
         modal = Modal(title="Configuração de Recebimento WS")
-        nome = TextInput(label="Nome do Titular", placeholder="Como aparece no banco")
+        nome = TextInput(label="Nome do Titular", placeholder="Nome que aparece no banco")
         chave = TextInput(label="Chave Pix", placeholder="Sua chave")
         qr = TextInput(label="Link do QR Code (URL)", required=False)
         modal.add_item(nome); modal.add_item(chave); modal.add_item(qr)
@@ -88,16 +93,15 @@ class ViewPix(View):
         async def on_submit(it: discord.Interaction):
             db_execute("INSERT OR REPLACE INTO pix (user_id, nome, chave, qrcode, partidas_feitas) VALUES (?,?,?,?, (SELECT partidas_feitas FROM pix WHERE user_id=?))", 
                        (it.user.id, nome.value, chave.value, qr.value, it.user.id))
-            await it.response.send_message(f"✅ Dados salvos com sucesso!", ephemeral=True)
+            await it.response.send_message(f"✅ Seus dados foram salvos!", ephemeral=True)
         
         modal.on_submit = on_submit
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Ver Minha Chave Pix", style=discord.ButtonStyle.secondary, emoji="🔍", custom_id="v18_ver")
+    @discord.ui.button(label="Ver Minha Chave Pix", style=discord.ButtonStyle.secondary, emoji="🔍", custom_id="v20_ver")
     async def ver_chave(self, interaction: discord.Interaction, button: Button):
         r = buscar_mediador(interaction.user.id)
-        if not r: return await interaction.response.send_message("❌ Você não possui cadastro!", ephemeral=True)
-        
+        if not r: return await interaction.response.send_message("❌ Sem cadastro!", ephemeral=True)
         emb = discord.Embed(title="💠 Seus Dados Cadastrados", color=0x3498db)
         emb.add_field(name="👤 Titular", value=r[0], inline=True)
         emb.add_field(name="🔑 Chave", value=f"`{r[1]}`", inline=True)
@@ -116,29 +120,23 @@ class ViewMediar(View):
         if fila_mediadores:
             for i, u_id in enumerate(fila_mediadores):
                 r = buscar_mediador(u_id)
-                nome = r[0] if r else "Mediador"
-                lista += f"**{i+1} •** {nome} (<@{u_id}>)\n"
-        else:
-            lista = "*Nenhum mediador disponível.*"
-            
-        emb = discord.Embed(title="🛡️ Painel da Fila Controladora", description=lista, color=0x2b2d31)
-        emb.set_footer(text="WS Apostas - Sistema de Mediação")
-        return emb
+                nome_formatado = r[0] if r else "Membro"
+                lista += f"**{i+1} •** {nome_formatado} (<@{u_id}>)\n"
+        else: lista = "*Nenhum mediador disponível.*"
+        return discord.Embed(title="🛡️ Painel da Fila Controladora", description=lista, color=0x2b2d31)
 
-    @discord.ui.button(label="Entrar na fila", style=discord.ButtonStyle.green, emoji="🟢", custom_id="v18_in")
+    @discord.ui.button(label="Entrar na fila", style=discord.ButtonStyle.green, emoji="🟢", custom_id="v20_in")
     async def entrar(self, it, b):
         if it.user.id not in fila_mediadores:
             fila_mediadores.append(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
-        else:
-            await it.response.send_message("⚠️ Você já está na fila!", ephemeral=True)
 
-    @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.red, emoji="🔴", custom_id="v18_out")
+    @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.red, emoji="🔴", custom_id="v20_out")
     async def sair(self, it, b):
         if it.user.id in fila_mediadores:
             fila_mediadores.remove(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
 
 # ==============================================================================
-#                          LÓGICA DE TÓPICOS E PARTIDAS
+#                          SISTEMA DE TÓPICOS E BLACKLIST
 # ==============================================================================
 class ViewConfirmacao(View):
     def __init__(self, p1, p2, med, valor, modo):
@@ -154,8 +152,8 @@ class ViewConfirmacao(View):
             await it.channel.purge(limit=5)
             r = buscar_mediador(self.med)
             try:
-                v_limpo = self.valor.replace('R$', '').replace(',', '.').strip()
-                v_final = f"{(float(v_limpo) + 0.10):.2f}".replace('.', ',')
+                v_calc = self.valor.replace('R$', '').replace(',', '.').strip()
+                v_final = f"{(float(v_calc) + 0.10):.2f}".replace('.', ',')
             except: v_final = self.valor
 
             emb = discord.Embed(title="💸 PAGAMENTO AO MEDIADOR", color=0xF1C40F)
@@ -187,18 +185,20 @@ class ViewFila(View):
     async def g_i(self, it, b): await self.add(it, "Gelo Infinito")
 
     async def add(self, it, gelo):
+        if manutencao_ativa: return await it.response.send_message("🚧 Manutenção.", ephemeral=True)
+        if usuario_banido(it.user.id): return await it.response.send_message("❌ Você está na blacklist!", ephemeral=True)
         if any(j["id"] == it.user.id for j in self.jogadores): return
+        
         self.jogadores.append({"id": it.user.id, "m": it.user.mention, "g": gelo})
         await it.response.send_message("✅ Entrou!", ephemeral=True)
         await self.message.edit(embed=self.gerar_embed())
 
         if len(self.jogadores) == 2:
-            if not fila_mediadores: return await it.channel.send("❌ Sem mediadores online!")
+            if not fila_mediadores: return await it.channel.send("❌ Sem mediadores online!", delete_after=5)
             j1, j2 = self.jogadores; med_id = fila_mediadores.pop(0); fila_mediadores.append(med_id)
             c_id = pegar_config("canal_th")
             th = await bot.get_channel(int(c_id)).create_thread(name=f"Partida-R${self.valor}", type=discord.ChannelType.public_thread)
             
-            # Visual Formal no Tópico
             r_med = buscar_mediador(med_id)
             emb_th = discord.Embed(title="Aguardando Confirmações", color=0x2ecc71)
             emb_th.add_field(name="👑 **Modo:**", value=self.modo, inline=False)
@@ -212,7 +212,30 @@ class ViewFila(View):
             self.jogadores = []; await self.message.edit(embed=self.gerar_embed())
 
 # ==============================================================================
-#                               COMANDOS
+#                               COMANDOS ADM (NEW)
+# ==============================================================================
+@bot.command()
+async def ban(ctx, usuario: discord.Member, *, motivo="Nenhum"):
+    if not ctx.author.guild_permissions.administrator: return
+    db_execute("INSERT OR REPLACE INTO blacklist VALUES (?,?,?)", (usuario.id, motivo, str(datetime.date.today())))
+    await ctx.send(f"🚫 {usuario.mention} foi banido das apostas por: {motivo}")
+
+@bot.command()
+async def unban(ctx, user_id: int):
+    if not ctx.author.guild_permissions.administrator: return
+    db_execute("DELETE FROM blacklist WHERE user_id=?", (user_id,))
+    await ctx.send(f"✅ Usuário {user_id} removido da blacklist.")
+
+@bot.command()
+async def manutencao(ctx):
+    if not ctx.author.guild_permissions.administrator: return
+    global manutencao_ativa
+    manutencao_ativa = not manutencao_ativa
+    status = "ATIVADA" if manutencao_ativa else "DESATIVADA"
+    await ctx.send(f"🚧 Manutenção global {status}.")
+
+# ==============================================================================
+#                               COMANDOS PADRÃO
 # ==============================================================================
 @bot.command()
 async def Pix(ctx):
@@ -255,10 +278,7 @@ async def on_message(message):
 
 @bot.event
 async def on_ready():
-    init_db()
-    bot.add_view(ViewPix())
-    bot.add_view(ViewMediar())
-    print(f"✅ WS Online: {bot.user}")
+    init_db(); bot.add_view(ViewPix()); bot.add_view(ViewMediar()); print(f"✅ WS Online: {bot.user}")
 
 if TOKEN: bot.run(TOKEN)
-    
+        
