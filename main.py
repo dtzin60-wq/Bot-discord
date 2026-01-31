@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, Button, Modal, TextInput, RoleSelect, ChannelSelect, UserSelect
 import sqlite3
@@ -130,13 +131,12 @@ class ViewFilaPrincipal(View):
         emb.add_field(name="📋 Modalidade", value=f"**{self.modo}**", inline=True)
         emb.add_field(name="💰 Valor", value=f"**R$ {self.valor}**", inline=True)
         
-        # ALTERAÇÃO SOLICITADA: Mostra o tipo de gelo ao lado do nome na lista
+        # Lista formatada com tipo de gelo
         lista_formatada = []
         if not self.jogadores:
             texto_lista = "*Aguardando...*"
         else:
             for p in self.jogadores:
-                # Se tiver tipo (gelo), adiciona. Se não, só o mention.
                 detalhe = f" - {p['tipo']}" if p.get('tipo') else ""
                 lista_formatada.append(f"👤 {p['m']}{detalhe}")
             texto_lista = "\n".join(lista_formatada)
@@ -147,15 +147,13 @@ class ViewFilaPrincipal(View):
         return emb
 
     async def join(self, it: discord.Interaction, tipo):
-        # Verifica se já está na fila
         if any(j['id'] == it.user.id for j in self.jogadores):
             return await it.response.send_message("Já está na fila.", ephemeral=True)
         
-        # Adiciona o jogador COM O TIPO DE GELO (se houver)
         self.jogadores.append({
             'id': it.user.id, 
             'm': it.user.mention, 
-            'tipo': tipo # Armazena "Gelo Normal" ou "Gelo Infinito"
+            'tipo': tipo
         })
         
         await it.response.edit_message(embed=self.get_embed())
@@ -184,14 +182,12 @@ class ViewFilaPrincipal(View):
         embed_topico = discord.Embed(title="Aguardando Confirmações", color=COR_CONFIRMACAO)
         embed_topico.set_thumbnail(url=ICONE_ORG)
         
-        # Pega o tipo de gelo do primeiro jogador para o título (ou genérico)
         tipo_exibicao = self.jogadores[0].get('tipo') if self.jogadores else "Padrão"
         modo_txt = f"{self.modo} | {tipo_exibicao if tipo_exibicao else 'Padrão'}"
         
         embed_topico.add_field(name="👑 Modo:", value=f"```{modo_txt}```", inline=False)
         embed_topico.add_field(name="💎 Valor da aposta:", value=f"```{self.valor}```", inline=False)
         
-        # Lista simples dentro do tópico
         jog_txt = "\n".join([j['m'] for j in self.jogadores])
         embed_topico.add_field(name="⚡ Jogadores:", value=jog_txt, inline=False)
         
@@ -209,13 +205,10 @@ class ViewFilaPrincipal(View):
         self.jogadores = []; await it.message.edit(embed=self.get_embed())
 
 # ==============================================================================
-#               PAINEL PIX (CORRIGIDO E FUNCIONAL)
+#               PAINEL PIX (SLASH COMMAND /pix)
 # ==============================================================================
 
 class ViewPainelPix(View):
-    """
-    View global para o comando .Pix.
-    """
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -256,16 +249,18 @@ class ViewPainelPix(View):
         view_s.add_item(sel)
         await interaction.response.send_message("Selecione o mediador:", view=view_s, ephemeral=True)
 
-@bot.command(name="Pix")
-async def Pix(ctx):
-    """Gera o painel de Pix funcional."""
+@bot.tree.command(name="pix", description="Gerencie sua chave PIX para recebimentos")
+async def slash_pix(interaction: discord.Interaction):
+    """
+    Comando de barra (Slash) para abrir o painel PIX.
+    """
     emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED_PADRAO)
     emb.description = (
         "Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
         "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX."
     )
     emb.set_thumbnail(url=ICONE_ORG)
-    await ctx.send(embed=emb, view=ViewPainelPix())
+    await interaction.response.send_message(embed=emb, view=ViewPainelPix())
 
 # ==============================================================================
 #               PAINEL DE MEDIAÇÃO
@@ -355,7 +350,9 @@ async def canal_fila(ctx):
 @bot.event
 async def on_ready():
     init_db()
-    print("WS SYSTEM - OPERACIONAL")
+    # Sincroniza o comando Slash com o Discord
+    await bot.tree.sync()
+    print("WS SYSTEM - OPERACIONAL (SLASH COMMANDS ATIVOS)")
 
 if TOKEN: bot.run(TOKEN)
-                
+            
