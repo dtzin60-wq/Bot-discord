@@ -29,7 +29,13 @@ fila_mediadores = []
 # ==============================================================================
 def init_db():
     with sqlite3.connect("ws_database_final.db") as con:
-        con.execute("CREATE TABLE IF NOT EXISTS pix (user_id INTEGER PRIMARY KEY, nome TEXT, chave TEXT)")
+        # ATUALIZADO: Adicionado campo 'qrcode'
+        con.execute("""CREATE TABLE IF NOT EXISTS pix (
+            user_id INTEGER PRIMARY KEY, 
+            nome TEXT, 
+            chave TEXT, 
+            qrcode TEXT
+        )""")
         con.execute("CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)")
         con.execute("CREATE TABLE IF NOT EXISTS pix_saldo (user_id INTEGER PRIMARY KEY, saldo REAL DEFAULT 0.0)")
         con.execute("CREATE TABLE IF NOT EXISTS restricoes (user_id INTEGER PRIMARY KEY, motivo TEXT)")
@@ -43,33 +49,43 @@ def db_query(query, params=()):
         return con.execute(query, params).fetchone()
 
 # ==============================================================================
-#                         VIEW: PAINEL PIX (CORRIGIDO)
+#                         VIEW: PAINEL PIX (ATUALIZADO COM QR CODE)
 # ==============================================================================
 class ViewPainelPix(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    # CORREÇÃO AQUI: Troquei o emoji inválido por 💠
     @discord.ui.button(label="Chave pix", style=discord.ButtonStyle.success, emoji="💠")
     async def btn_cadastrar(self, interaction: discord.Interaction, button: Button):
         modal = Modal(title="Cadastrar Chave PIX")
-        nome = TextInput(label="Nome Completo", placeholder="Digite seu nome...")
-        chave = TextInput(label="Chave PIX", placeholder="CPF, Email, Telefone...")
-        modal.add_item(nome); modal.add_item(chave)
+        
+        # Campos do Formulário
+        nome = TextInput(label="Nome Completo", placeholder="Digite seu nome...", required=True)
+        chave = TextInput(label="Chave PIX", placeholder="CPF, Email, Telefone...", required=True)
+        # NOVO CAMPO: QR CODE
+        qrcode = TextInput(label="QR Code / Copia e Cola", placeholder="Cole o link ou código aqui...", required=False)
+        
+        modal.add_item(nome)
+        modal.add_item(chave)
+        modal.add_item(qrcode) # Adiciona em baixo da chave
         
         async def on_submit(it: discord.Interaction):
-            db_exec("INSERT OR REPLACE INTO pix (user_id, nome, chave) VALUES (?,?,?)", 
-                    (it.user.id, nome.value, chave.value))
-            await it.response.send_message("✅ **Sucesso!** Seus dados foram salvos.", ephemeral=True)
+            # Salva nome, chave e qrcode
+            db_exec("INSERT OR REPLACE INTO pix (user_id, nome, chave, qrcode) VALUES (?,?,?,?)", 
+                    (it.user.id, nome.value, chave.value, qrcode.value))
+            await it.response.send_message("✅ **Sucesso!** Seus dados (incluindo QR Code) foram salvos.", ephemeral=True)
         
         modal.on_submit = on_submit
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="Sua Chave", style=discord.ButtonStyle.success, emoji="🔍")
     async def btn_ver_sua(self, interaction: discord.Interaction, button: Button):
-        dados = db_query("SELECT nome, chave FROM pix WHERE user_id=?", (interaction.user.id,))
+        dados = db_query("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (interaction.user.id,))
         if dados:
-            await interaction.response.send_message(f"👤 **Nome:** {dados[0]}\n🔑 **Chave:** `{dados[1]}`", ephemeral=True)
+            msg = f"👤 **Nome:** {dados[0]}\n🔑 **Chave:** `{dados[1]}`"
+            if dados[2]: # Se tiver QR Code
+                msg += f"\n🔳 **QR Code:** `{dados[2]}`"
+            await interaction.response.send_message(msg, ephemeral=True)
         else:
             await interaction.response.send_message("❌ Você não tem chave cadastrada.", ephemeral=True)
 
@@ -80,9 +96,12 @@ class ViewPainelPix(View):
         
         async def callback(it: discord.Interaction):
             target = select.values[0]
-            dados = db_query("SELECT nome, chave FROM pix WHERE user_id=?", (target.id,))
+            dados = db_query("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (target.id,))
             if dados:
-                await it.response.send_message(f"Dados de {target.mention}:\n👤 **Nome:** {dados[0]}\n🔑 **Chave:** `{dados[1]}`", ephemeral=True)
+                msg = f"Dados de {target.mention}:\n👤 **Nome:** {dados[0]}\n🔑 **Chave:** `{dados[1]}`"
+                if dados[2]:
+                    msg += f"\n🔳 **QR Code:** `{dados[2]}`"
+                await it.response.send_message(msg, ephemeral=True)
             else:
                 await it.response.send_message(f"❌ {target.mention} não possui chave cadastrada.", ephemeral=True)
         
@@ -103,7 +122,6 @@ class ViewConfirmacao(View):
 
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success)
     async def confirmar(self, it: discord.Interaction, btn: Button):
-        # Verifica se é jogador
         if it.user.id not in [j['id'] for j in self.jogadores]: 
             return await it.response.send_message("Você não está jogando.", ephemeral=True)
         
@@ -122,14 +140,13 @@ class ViewConfirmacao(View):
             emb_start = discord.Embed(title="✅ SESSÃO INICIADA", color=COR_VERDE)
             emb_start.description = f"Mediador: <@{self.med_id}>\nJogadores: {' '.join([j['m'] for j in self.jogadores])}"
             await it.channel.send(content=f"<@{self.med_id}>", embed=emb_start)
-            # Add comissão
             db_exec("INSERT OR REPLACE INTO pix_saldo (user_id, saldo) VALUES (?, COALESCE((SELECT saldo FROM pix_saldo WHERE user_id=?), 0) + 0.10)", (self.med_id, self.med_id))
 
     @discord.ui.button(label="Recusar", style=discord.ButtonStyle.danger)
     async def recusar(self, it: discord.Interaction, btn: Button):
         if it.user.id in [j['id'] for j in self.jogadores]:
             await it.channel.send("🚫 Partida recusada.")
-            await it.channel.edit(locked=True, archived=True)
+            await it.channel.delete()
 
     @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.secondary, emoji="🏳️")
     async def regras(self, it: discord.Interaction, btn: Button):
@@ -171,7 +188,6 @@ class ViewFila(View):
         if not self.jogadores: lista.append("*Aguardando...*")
         else:
             for p in self.jogadores:
-                # Exibe o tipo de gelo na lista
                 extra = f" - {p['t']}" if p['t'] else ""
                 lista.append(f"👤 {p['m']}{extra}")
         
@@ -217,7 +233,6 @@ class ViewFila(View):
 @bot.tree.command(name="pix", description="Gerencie sua chave PIX")
 async def slash_pix(interaction: discord.Interaction):
     try:
-        # 1. DEFER: Evita timeout do Discord
         await interaction.response.defer(ephemeral=False)
         
         emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED)
@@ -227,7 +242,6 @@ async def slash_pix(interaction: discord.Interaction):
         )
         emb.set_thumbnail(url=ICONE_ORG)
         
-        # 2. FOLLOWUP: Envia a mensagem segura
         await interaction.followup.send(embed=emb, view=ViewPainelPix())
         
     except Exception as e:
@@ -283,7 +297,7 @@ async def canal_fila(ctx):
 async def on_ready():
     init_db()
     await bot.tree.sync()
-    print("WS FINAL ONLINE - COM EMOJI CORRIGIDO")
+    print("WS FINAL ONLINE - QR CODE ADICIONADO")
 
 if TOKEN: bot.run(TOKEN)
-        
+            
