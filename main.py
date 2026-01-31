@@ -9,7 +9,7 @@ import datetime
 import sys
 
 # ==============================================================================
-#                               SISTEMA DE LOGS E STATS
+#                               SISTEMA DE LOGS
 # ==============================================================================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('discord')
@@ -25,14 +25,14 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# Estados Globais e Variáveis de Controle
+# Estados Globais
 fila_mediadores = []
 partidas_ativas = {}
 temp_dados_sala = {}
-manutencao_ativa = False # Novo: Sistema de bloqueio global
+manutencao_ativa = False
 
 # ==============================================================================
-#                               BANCO DE DADOS (EXTENDIDO)
+#                               BANCO DE DADOS
 # ==============================================================================
 def init_db():
     with sqlite3.connect("dados_bot.db") as con:
@@ -74,17 +74,17 @@ def buscar_mediador(user_id):
         return con.execute("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (user_id,)).fetchone()
 
 # ==============================================================================
-#                             VISUAL DO COMANDO .Pix
+#                      NOVO VISUAL DO COMANDO .Pix (CONFORME IMAGEM)
 # ==============================================================================
 class ViewPix(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Cadastrar Minha Chave", style=discord.ButtonStyle.green, emoji="💠", custom_id="v20_cad")
+    @discord.ui.button(label="Chave pix", style=discord.ButtonStyle.green, emoji="💠", custom_id="v21_cad")
     async def cadastrar(self, interaction: discord.Interaction, button: Button):
         if manutencao_ativa: return await interaction.response.send_message("🚧 Bot em manutenção!", ephemeral=True)
         
-        modal = Modal(title="Configuração de Recebimento WS")
+        modal = Modal(title="Configurar Chave PIX")
         nome = TextInput(label="Nome do Titular", placeholder="Nome que aparece no banco")
         chave = TextInput(label="Chave Pix", placeholder="Sua chave")
         qr = TextInput(label="Link do QR Code (URL)", required=False)
@@ -93,20 +93,43 @@ class ViewPix(View):
         async def on_submit(it: discord.Interaction):
             db_execute("INSERT OR REPLACE INTO pix (user_id, nome, chave, qrcode, partidas_feitas) VALUES (?,?,?,?, (SELECT partidas_feitas FROM pix WHERE user_id=?))", 
                        (it.user.id, nome.value, chave.value, qr.value, it.user.id))
-            await it.response.send_message(f"✅ Seus dados foram salvos!", ephemeral=True)
+            await it.response.send_message(f"✅ Chave de **{nome.value}** cadastrada com sucesso!", ephemeral=True)
         
         modal.on_submit = on_submit
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Ver Minha Chave Pix", style=discord.ButtonStyle.secondary, emoji="🔍", custom_id="v20_ver")
-    async def ver_chave(self, interaction: discord.Interaction, button: Button):
+    @discord.ui.button(label="Sua Chave", style=discord.ButtonStyle.green, emoji="🔍", custom_id="v21_sua")
+    async def sua_chave(self, interaction: discord.Interaction, button: Button):
         r = buscar_mediador(interaction.user.id)
-        if not r: return await interaction.response.send_message("❌ Sem cadastro!", ephemeral=True)
-        emb = discord.Embed(title="💠 Seus Dados Cadastrados", color=0x3498db)
-        emb.add_field(name="👤 Titular", value=r[0], inline=True)
-        emb.add_field(name="🔑 Chave", value=f"`{r[1]}`", inline=True)
+        if not r: return await interaction.response.send_message("❌ Você não cadastrou uma chave ainda!", ephemeral=True)
+        
+        emb = discord.Embed(title="💠 Sua Chave PIX", color=0x2ecc71)
+        emb.description = f"**Titular:** {r[0]}\n**Chave:** `{r[1]}`"
         if r[2]: emb.set_image(url=r[2])
         await interaction.response.send_message(embed=emb, ephemeral=True)
+
+    @discord.ui.button(label="Ver Chave de Mediador", style=discord.ButtonStyle.gray, emoji="🔍", custom_id="v21_ver_med")
+    async def ver_mediador(self, interaction: discord.Interaction, button: Button):
+        # Esta função abre um modal para buscar por ID ou menção
+        modal = Modal(title="Buscar Chave de Mediador")
+        alvo = TextInput(label="ID do Mediador", placeholder="Insira o ID do mediador que deseja ver")
+        modal.add_item(alvo)
+
+        async def buscar(it: discord.Interaction):
+            try:
+                uid = int(alvo.value.strip())
+                r = buscar_mediador(uid)
+                if not r: return await it.response.send_message("❌ Mediador não encontrado no sistema.", ephemeral=True)
+                
+                emb = discord.Embed(title=f"💠 Chave de Mediador", color=0x3498db)
+                emb.description = f"**Titular:** {r[0]}\n**Chave:** `{r[1]}`"
+                if r[2]: emb.set_image(url=r[2])
+                await it.response.send_message(embed=emb, ephemeral=True)
+            except:
+                await it.response.send_message("❌ ID inválido. Insira apenas números.", ephemeral=True)
+
+        modal.on_submit = buscar
+        await interaction.response.send_modal(modal)
 
 # ==============================================================================
 #                          VISUAL DO COMANDO .mediar
@@ -125,18 +148,18 @@ class ViewMediar(View):
         else: lista = "*Nenhum mediador disponível.*"
         return discord.Embed(title="🛡️ Painel da Fila Controladora", description=lista, color=0x2b2d31)
 
-    @discord.ui.button(label="Entrar na fila", style=discord.ButtonStyle.green, emoji="🟢", custom_id="v20_in")
+    @discord.ui.button(label="Entrar na fila", style=discord.ButtonStyle.green, emoji="🟢", custom_id="v21_in")
     async def entrar(self, it, b):
         if it.user.id not in fila_mediadores:
             fila_mediadores.append(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
 
-    @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.red, emoji="🔴", custom_id="v20_out")
+    @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.red, emoji="🔴", custom_id="v21_out")
     async def sair(self, it, b):
         if it.user.id in fila_mediadores:
             fila_mediadores.remove(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
 
 # ==============================================================================
-#                          SISTEMA DE TÓPICOS E BLACKLIST
+#                          LÓGICA DE FILA E TÓPICOS
 # ==============================================================================
 class ViewConfirmacao(View):
     def __init__(self, p1, p2, med, valor, modo):
@@ -212,34 +235,19 @@ class ViewFila(View):
             self.jogadores = []; await self.message.edit(embed=self.gerar_embed())
 
 # ==============================================================================
-#                               COMANDOS ADM (NEW)
-# ==============================================================================
-@bot.command()
-async def ban(ctx, usuario: discord.Member, *, motivo="Nenhum"):
-    if not ctx.author.guild_permissions.administrator: return
-    db_execute("INSERT OR REPLACE INTO blacklist VALUES (?,?,?)", (usuario.id, motivo, str(datetime.date.today())))
-    await ctx.send(f"🚫 {usuario.mention} foi banido das apostas por: {motivo}")
-
-@bot.command()
-async def unban(ctx, user_id: int):
-    if not ctx.author.guild_permissions.administrator: return
-    db_execute("DELETE FROM blacklist WHERE user_id=?", (user_id,))
-    await ctx.send(f"✅ Usuário {user_id} removido da blacklist.")
-
-@bot.command()
-async def manutencao(ctx):
-    if not ctx.author.guild_permissions.administrator: return
-    global manutencao_ativa
-    manutencao_ativa = not manutencao_ativa
-    status = "ATIVADA" if manutencao_ativa else "DESATIVADA"
-    await ctx.send(f"🚧 Manutenção global {status}.")
-
-# ==============================================================================
-#                               COMANDOS PADRÃO
+#                               COMANDOS
 # ==============================================================================
 @bot.command()
 async def Pix(ctx):
-    await ctx.send(embed=discord.Embed(title="⚙️ CONFIGURAÇÃO PIX", color=0x2b2d31), view=ViewPix())
+    # Visual e descrição idênticos aos da imagem enviada
+    emb = discord.Embed(
+        title="Painel Para Configurar Chave PIX",
+        description="Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\nSelecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX.",
+        color=0x2b2d31
+    )
+    # Foto de perfil do bot ou ícone da org no canto direito (thumbnail)
+    emb.set_thumbnail(url=bot.user.display_avatar.url)
+    await ctx.send(embed=emb, view=ViewPix())
 
 @bot.command()
 async def mediar(ctx):
@@ -250,6 +258,12 @@ async def mediar(ctx):
 async def fila(ctx, modo, valor):
     if ctx.author.guild_permissions.administrator:
         v = ViewFila(modo, valor); msg = await ctx.send(embed=v.gerar_embed(), view=v); v.message = msg
+
+@bot.command()
+async def ban(ctx, usuario: discord.Member, *, motivo="Nenhum"):
+    if not ctx.author.guild_permissions.administrator: return
+    db_execute("INSERT OR REPLACE INTO blacklist VALUES (?,?,?)", (usuario.id, motivo, str(datetime.date.today())))
+    await ctx.send(f"🚫 {usuario.mention} foi banido das apostas por: {motivo}")
 
 @bot.command()
 async def canal(ctx):
@@ -281,4 +295,4 @@ async def on_ready():
     init_db(); bot.add_view(ViewPix()); bot.add_view(ViewMediar()); print(f"✅ WS Online: {bot.user}")
 
 if TOKEN: bot.run(TOKEN)
-        
+    
