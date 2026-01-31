@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-from discord.ui import View, Button, Modal, TextInput, RoleSelect
+from discord.ui import View, Button, Modal, TextInput, RoleSelect, ChannelSelect
 import sqlite3
 import aiohttp
 import os
@@ -8,234 +8,231 @@ import datetime
 import asyncio
 
 # ==============================================================================
-#                         SISTEMA EXECUTIVO WS APOSTAS
+#                         CONFIGURAÇÕES E IDENTIDADE VISUAL
 # ==============================================================================
-# Este script representa a infraestrutura central de operações da WS Apostas.
-# Versão: 4.2.0 | Status: Operacional | Linhas: > 200
-
 TOKEN = os.getenv("TOKEN")
+BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
+ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
+
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# Cache de Operações em Tempo Real
-fila_mediadores = []
-COMISSAO_OPERACIONAL = 0.10
+# Cache de Sistema Operacional
+fila_mediadores = [] 
+COMISSAO_FIXA = 0.10  # Dez centavos por serviço prestado
 
-# ------------------------------------------------------------------------------
-#                         INFRAESTRUTURA DE DADOS (SQLITE3)
-# ------------------------------------------------------------------------------
+# ==============================================================================
+#                         GESTÃO DE BANCO DE DADOS (SQLITE)
+# ==============================================================================
+def init_db():
+    """Inicializa as tabelas de persistência de dados do ecossistema WS."""
+    with sqlite3.connect("dados_ws_final.db") as con:
+        con.execute("""CREATE TABLE IF NOT EXISTS pix (
+            user_id INTEGER PRIMARY KEY, 
+            nome TEXT, 
+            chave TEXT, 
+            qrcode TEXT,
+            saldo_acumulado REAL DEFAULT 0.0,
+            total_servicos INTEGER DEFAULT 0
+        )""")
+        con.execute("CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS restricoes (user_id INTEGER PRIMARY KEY, motivo TEXT)")
+        con.execute("""CREATE TABLE IF NOT EXISTS registro_atividades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            med_id INTEGER, 
+            valor_partida TEXT, 
+            timestamp TEXT
+        )""")
+        con.commit()
 
-def inicializar_infraestrutura():
-    """Estabelece a base de dados para persistência multidimensional."""
-    with sqlite3.connect("ws_principal.db") as conexao:
-        cursor = conexao.cursor()
-        # Armazenamento de diretrizes por Guild ID para isolamento de servidores
-        cursor.execute("""CREATE TABLE IF NOT EXISTS diretrizes (
-            guild_id INTEGER, chave TEXT, valor TEXT, PRIMARY KEY (guild_id, chave))""")
-        # Registro financeiro e operacional de colaboradores
-        cursor.execute("""CREATE TABLE IF NOT EXISTS colaboradores (
-            user_id INTEGER PRIMARY KEY, saldo REAL DEFAULT 0.0, servicos INTEGER DEFAULT 0)""")
-        conexao.commit()
+def db_execute(query, params=()):
+    with sqlite3.connect("dados_ws_final.db") as con:
+        con.execute(query, params); con.commit()
 
-def salvar_diretriz(guild_id, chave, valor):
-    """Persiste uma configuração administrativa no banco de dados."""
-    with sqlite3.connect("ws_principal.db") as conexao:
-        conexao.execute("INSERT OR REPLACE INTO diretrizes VALUES (?, ?, ?)", (guild_id, chave, str(valor)))
+def db_query(query, params=()):
+    with sqlite3.connect("dados_ws_final.db") as con:
+        return con.execute(query, params).fetchone()
 
-def ler_diretriz(guild_id, chave):
-    """Recupera uma diretriz específica do servidor solicitado."""
-    with sqlite3.connect("ws_principal.db") as conexao:
-        res = conexao.execute("SELECT valor FROM diretrizes WHERE guild_id = ? AND chave = ?", (guild_id, chave)).fetchone()
-        return res[0] if res else None
+async def registrar_comissao_formal(med_id, valor_aposta):
+    """Atribui o lucro operacional de R$ 0,10 ao mediador responsável."""
+    db_execute("""UPDATE pix SET saldo_acumulado = saldo_acumulado + ?, 
+                  total_servicos = total_servicos + 1 WHERE user_id = ?""", (COMISSAO_FIXA, med_id))
+    db_execute("INSERT INTO registro_atividades (med_id, valor_partida, timestamp) VALUES (?,?,?)", 
+               (med_id, valor_aposta, str(datetime.datetime.now())))
 
-# ------------------------------------------------------------------------------
-#                         SISTEMA DE FILAS (1V1 E COLETIVOS)
-# ------------------------------------------------------------------------------
-
-class ViewSessaoWSApostas(View):
-    """Interface operacional para engajamento em sessões de apostas."""
-    def __init__(self, modo, valor, guild_id):
+# ==============================================================================
+#                         ESTRUTURA DAS FILAS DE APOSTAS
+# ==============================================================================
+class ViewFilaAposta(View):
+    def __init__(self, modo, valor):
         super().__init__(timeout=None)
-        self.modo, self.valor, self.guild_id = modo, valor, guild_id
-        self.jogadores = []
-        self._montar_interface()
+        self.modo, self.valor, self.jogadores = modo, valor, []
+        self._configurar_botoes()
 
-    def _montar_interface(self):
+    def _configurar_botoes(self):
+        """Define os protocolos de interface baseados na modalidade de jogo."""
         self.clear_items()
+        
+        # Protocolo Exclusivo para Duelos 1v1
         if "1V1" in self.modo.upper():
-            # Protocolo específico para duelos individuais
-            btn_n = Button(label="Gelo Normal", style=discord.ButtonStyle.secondary)
-            btn_i = Button(label="Gelo Infinito", style=discord.ButtonStyle.primary)
-            btn_s = Button(label="Sair da Fila", style=discord.ButtonStyle.danger)
-            btn_n.callback = self.registrar; btn_i.callback = self.registrar; btn_s.callback = self.remover
-            self.add_item(btn_n); self.add_item(btn_i); self.add_item(btn_s)
+            btn_normal = Button(label="Gelo Normal", style=discord.ButtonStyle.secondary, custom_id="ws_normal")
+            btn_infinito = Button(label="Gelo Infinito", style=discord.ButtonStyle.primary, custom_id="ws_infinito")
+            btn_sair = Button(label="Sair da Fila", style=discord.ButtonStyle.danger, custom_id="ws_sair")
+            
+            btn_normal.callback = self.registrar_participacao
+            btn_infinito.callback = self.registrar_participacao
+            btn_sair.callback = self.remover_participacao
+            
+            self.add_item(btn_normal)
+            self.add_item(btn_infinito)
+            self.add_item(btn_sair)
+        
+        # Protocolo para Modalidades Coletivas (2v2, 3v3, 4v4)
         else:
-            # Protocolo para confrontos em equipe
-            btn_e = Button(label="Entrar na Fila", style=discord.ButtonStyle.success)
-            btn_s = Button(label="Sair da Fila", style=discord.ButtonStyle.danger)
-            btn_e.callback = self.registrar; btn_s.callback = self.remover
-            self.add_item(btn_e); self.add_item(btn_s)
+            btn_entrar = Button(label="Confirmar Participação", style=discord.ButtonStyle.success, custom_id="ws_entrar")
+            btn_sair = Button(label="Sair da Fila", style=discord.ButtonStyle.danger, custom_id="ws_sair_coletivo")
+            
+            btn_entrar.callback = self.registrar_participacao
+            btn_sair.callback = self.remover_participacao
+            
+            self.add_item(btn_entrar)
+            self.add_item(btn_sair)
 
-    def criar_embed(self):
-        emb = discord.Embed(title=f"Sessão Operacional | {self.modo}", color=0x2b2d31)
-        emb.add_field(name="💰 Valor Nominal", value=f"R$ {self.valor}", inline=True)
-        lista = "\n".join([f"👤 {j['m']}" for j in self.jogadores]) or "*Aguardando proponentes...*"
-        emb.add_field(name="👥 Inscritos", value=lista, inline=False)
+    def gerar_embed(self):
+        emb = discord.Embed(title=f"Sessão de Aposta | {self.modo}", color=0x2b2d31)
+        emb.set_author(name="WS APOSTAS - GESTÃO DE ATIVOS", icon_url=ICONE_ORG)
+        
+        emb.add_field(name="📋 Modalidade", value=f"**{self.modo}**", inline=True)
+        emb.add_field(name="💰 Valor da Entrada", value=f"**R$ {self.valor}**", inline=True)
+        
+        lista = "\n".join([f"👤 {j['m']}" for j in self.jogadores]) or "*Aguardando proponentes ativos...*"
+        emb.add_field(name="👥 Participantes Inscritos", value=lista, inline=False)
+        
+        emb.set_image(url=BANNER_URL)
+        emb.set_footer(text="© 2026 WS Apostas | Sistema de Alta Disponibilidade")
         return emb
 
-    async def registrar(self, it: discord.Interaction):
+    async def registrar_participacao(self, it: discord.Interaction):
+        """Valida e processa a entrada de um proponente na sessão."""
+        if db_query("SELECT 1 FROM restricoes WHERE user_id=?", (it.user.id,)):
+            return await it.response.send_message("Acesso negado: Sua conta possui restrições administrativas.", ephemeral=True)
+        
         if any(j["id"] == it.user.id for j in self.jogadores): 
-            return await it.response.send_message("Vossa senhoria já consta na lista de inscritos.", ephemeral=True)
+            return await it.response.send_message("Inconsistência: Você já consta na lista de inscritos.", ephemeral=True)
+        
         self.jogadores.append({"id": it.user.id, "m": it.user.mention})
-        await it.response.edit_message(embed=self.criar_embed())
+        await it.response.edit_message(embed=self.gerar_embed())
         
-        limite = int(self.modo[0]) * 2 if self.modo[0].isdigit() else 2
+        # Cálculo de fechamento baseado no primeiro dígito do modo (1v1=2 jogadores, 2v2=4...)
+        limite = int(self.modo[0]) * 2
         if len(self.jogadores) >= limite:
-            await self.processar_fechamento(it)
+            await self.finalizar_sessao(it)
 
-    async def remover(self, it: discord.Interaction):
-        self.jogadores = [j for j in self.jogadores if j['id'] != it.user.id]
-        await it.response.edit_message(embed=self.criar_embed())
+    async def remover_participacao(self, it: discord.Interaction):
+        """Remove o proponente da fila atual."""
+        self.jogadores = [j for j in self.jogadores if j["id"] != it.user.id]
+        await it.response.edit_message(embed=self.gerar_embed())
 
-    async def processar_fechamento(self, it):
-        if not fila_mediadores: 
-            return await it.channel.send("⚠️ Inconsistência: Mediadores indisponíveis no momento.", delete_after=5)
+    async def finalizar_sessao(self, it):
+        """Processa o encerramento da fila e escala o mediador responsável."""
+        if not fila_mediadores:
+            return await it.channel.send("⚠️ Erro Operacional: Mediadores indisponíveis no momento.", delete_after=5)
         
-        mediador_id = fila_mediadores.pop(0)
-        fila_mediadores.append(mediador_id)
+        mediador_atual = fila_mediadores.pop(0)
+        fila_mediadores.append(mediador_atual)
         
-        canal_id = ler_diretriz(it.guild.id, "canal_th")
-        if canal_id:
-            canal = bot.get_channel(int(canal_id))
-            topico = await canal.create_thread(name=f"Sessão-{self.valor}", type=discord.ChannelType.public_thread)
-            await topico.send(f"Sessão iniciada sob custódia de <@{mediador_id}>. Proponentes: " + ", ".join([j['m'] for j in self.jogadores]))
+        await registrar_comissao_formal(mediador_atual, self.valor)
+        
+        c_id = db_query("SELECT valor FROM config WHERE chave='canal_th'")
+        if c_id:
+            canal = bot.get_channel(int(c_id[0]))
+            th = await canal.create_thread(name=f"Sessão-{self.valor}", type=discord.ChannelType.public_thread)
+            await th.send(content=f"📝 **NOTIFICAÇÃO DE INÍCIO**\nMediador: <@{mediador_atual}>\nValor: R$ {self.valor}\nStatus: Aguardando Sala.")
         
         self.jogadores = []
-        await it.message.edit(embed=self.criar_embed())
+        await it.message.edit(embed=self.gerar_embed())
 
-# ------------------------------------------------------------------------------
-#                         MÓDULO ADMINISTRATIVO (.botconfig)
-# ------------------------------------------------------------------------------
-
-class ModalIdentidadeWS(Modal):
+# ==============================================================================
+#                         GERADOR DE BLOCO OPERACIONAL
+# ==============================================================================
+class ModalGeradorWS(Modal):
     def __init__(self):
-        super().__init__(title="Reestruturação Identitária")
-        self.n = TextInput(label="Nome do Sistema", placeholder="Ex: WS APOSTAS ELITE")
-        self.f = TextInput(label="URL do Avatar", placeholder="Link direto da imagem...")
-        self.add_item(self.n); self.add_item(self.f)
-        
+        super().__init__(title="Parametrização de Bloco WS")
+        self.modo = TextInput(label="Designação da Modalidade", placeholder="Ex: 1v1, 2v2...", default="1v1")
+        self.plataforma = TextInput(label="Plataforma de Acesso", placeholder="Ex: Mobile, Emulador...", default="Mobile")
+        self.add_item(self.modo); self.add_item(self.plataforma)
+
     async def on_submit(self, it: discord.Interaction):
-        try:
-            if self.n.value: await bot.user.edit(username=self.n.value)
-            if self.f.value:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(self.f.value) as r:
-                        if r.status == 200: await bot.user.edit(avatar=await r.read())
-            await it.response.send_message("Protocolo identitário atualizado com sucesso.", ephemeral=True)
-        except Exception as e:
-            await it.response.send_message(f"Falha técnica na alteração: {e}", ephemeral=True)
+        valores_escopo = ["100,00", "80,00", "60,00", "50,00", "30,00", "15,00", "13,00", "10,00", "5,00", "3,00", "2,00", "1,00", "0,50"]
+        await it.response.send_message(f"Gerando {len(valores_escopo)} instâncias operacionais...", ephemeral=True)
+        
+        formato = f"{self.modo.value.upper()} | {self.plataforma.value.upper()}"
+        for valor in valores_escopo:
+            view = ViewFilaAposta(formato, valor)
+            await it.channel.send(embed=view.gerar_embed(), view=view)
+            await asyncio.sleep(0.8)
 
-class ViewConfigPrincipal(View):
-    def __init__(self, guild_id):
-        super().__init__(timeout=None)
-        self.guild_id = guild_id
-
-    @discord.ui.button(label="Identidade Visual", style=discord.ButtonStyle.secondary, emoji="🎭")
-    async def iden(self, it, b):
-        await it.response.send_modal(ModalIdentidadeWS())
-
-    @discord.ui.button(label="Permissões de Comandos", style=discord.ButtonStyle.primary, emoji="🔐")
-    async def perms(self, it, b):
-        v = View()
-        sel = discord.ui.Select(placeholder="Selecione o comando...", options=[
-            discord.SelectOption(label="Fila (Apostas)", value="perm_fila"),
-            discord.SelectOption(label="SSMOB (Auditoria)", value="perm_ssmob"),
-            discord.SelectOption(label="Auxílio Técnico", value="perm_aux")
-        ])
-        async def cb(i: discord.Interaction):
-            await i.response.send_message("Indique o cargo autorizado:", view=ViewSeletorCargos(self.guild_id, sel.values[0]))
-        sel.callback = cb
-        v.add_item(sel)
-        await it.response.edit_message(content="### Gestão de Privilégios", view=v)
-
-class ViewSeletorCargos(View):
-    def __init__(self, g_id, ch):
-        super().__init__(timeout=None)
-        self.g_id, self.ch = g_id, ch
-
-    @discord.ui.select(cls=RoleSelect, placeholder="Selecione o cargo na hierarquia...")
-    async def role(self, it: discord.Interaction, s: RoleSelect): 
-        salvar_diretriz(self.g_id, self.ch, s.values[0].id)
-        await it.response.send_message(f"Diretriz hierárquica salva para: {self.ch}", ephemeral=True)
-
-# ------------------------------------------------------------------------------
-#                         COMANDOS EXECUTIVOS (FIX: RAILWAY ERROR)
-# ------------------------------------------------------------------------------
-
-@bot.command()
-async def botconfig(ctx):
-    """Acessa o painel de diretrizes administrativas do servidor."""
-    if ctx.author.guild_permissions.administrator:
-        await ctx.send("### Central de Comando WS APOSTAS", view=ViewConfigPrincipal(ctx.guild.id))
-    else:
-        await ctx.send("Vossa senhoria não possui os privilégios administrativos necessários.")
-
+# ==============================================================================
+#                         PAINÉIS DE GESTÃO E COMANDOS
+# ==============================================================================
 @bot.command()
 async def fila(ctx):
-    """Instancia o bloco de sessões operacionais no canal."""
-    if ctx.author.guild_permissions.administrator:
-        valores = ["100,00", "50,00", "20,00", "10,00", "5,00", "2,00", "1,00", "0,50"]
-        for v in valores:
-            view = ViewSessaoWSApostas("1v1", v, ctx.guild.id)
-            await ctx.send(embed=view.criar_embed(), view=view)
-            await asyncio.sleep(0.5)
-    else:
-        await ctx.send("Comando restrito ao corpo administrativo.")
+    """Instancia o painel administrativo para geração de filas profissionais."""
+    if not ctx.author.guild_permissions.administrator: return
+    class Painel(View):
+        @discord.ui.button(label="Gerar Bloco WS (13 Filas)", style=discord.ButtonStyle.danger)
+        async def iniciar(self, it, b): await it.response.send_modal(ModalGeradorWS())
+    await ctx.send("### CENTRAL DE COMANDO WS\nInicie a geração das sessões de apostas via protocolo administrativo.", view=Painel())
 
 @bot.command()
 async def Pix(ctx):
-    """Gerenciamento de credenciais financeiras para recebimento."""
-    emb = discord.Embed(title="Gestão Financeira - WS", color=0x2ecc71)
-    emb.description = "Utilize este canal para registrar ou atualizar sua chave PIX de recebimento."
-    emb.add_field(name="Protocolo", value="Envie sua chave via DM para processamento seguro.")
-    await ctx.send(embed=emb)
+    """Painel formal para parametrização de dados bancários."""
+    from discord.ui import View
+    class ViewFinanceiroWS(View):
+        @discord.ui.button(label="Cadastrar Dados PIX", style=discord.ButtonStyle.success)
+        async def cad(self, it, b):
+            modal = Modal(title="Formulário Bancário")
+            n = TextInput(label="Nome do Titular"); c = TextInput(label="Chave PIX"); q = TextInput(label="QR Code (URL)", required=False)
+            modal.add_item(n); modal.add_item(c); modal.add_item(q)
+            async def cb(inter):
+                db_execute("INSERT OR REPLACE INTO pix (user_id, nome, chave, qrcode) VALUES (?,?,?,?)", (inter.user.id, n.value, c.value, q.value))
+                await inter.response.send_message("Dados registrados no sistema central.", ephemeral=True)
+            modal.on_submit = cb; await it.response.send_modal(modal)
+
+    emb = discord.Embed(title="Gestão de Recebimentos", description="Configure os dados para o repasse de seus proventos.", color=0x2b2d31)
+    await ctx.send(embed=emb, view=ViewFinanceiroWS())
 
 @bot.command()
-async def Mediar(ctx):
-    """Inicia o plantão operacional na escala de mediadores ativos."""
-    if ctx.author.id not in fila_mediadores:
-        fila_mediadores.append(ctx.author.id)
-        await ctx.send("Vossa senhoria foi devidamente inserida na escala ativa de mediação.")
-    else:
-        await ctx.send("Vossa senhoria já se encontra em plantão operacional.")
+async def canal_fila(ctx):
+    """Define o destino oficial para a criação de tópicos de partida."""
+    if not ctx.author.guild_permissions.administrator: return
+    view = View(); seletor = ChannelSelect(placeholder="Selecione o canal oficial")
+    async def callback(it):
+        db_execute("INSERT OR REPLACE INTO config VALUES ('canal_th', ?)", (str(seletor.values[0].id),))
+        await it.response.send_message(f"O canal {seletor.values[0].mention} foi parametrizado com sucesso.", ephemeral=True)
+    seletor.callback = callback; view.add_item(seletor); await ctx.send("Configuração de Destino:", view=view)
 
 @bot.command()
-async def ssmob(ctx, usuario: discord.Member):
-    """Inicia o protocolo de auditoria visual obrigatória para usuários mobile."""
-    emb = discord.Embed(title="PROTOCOLO DE SEGURANÇA - AUDITORIA", color=0xe67e22)
-    emb.description = f"Prezado {usuario.mention},\n\nSolicitamos o encaminhamento imediato de sua captura de tela (SS) para fins de verificação."
-    emb.set_footer(text="A omissão deste procedimento resultará em sanções administrativas.")
-    await ctx.send(content=usuario.mention, embed=emb)
-
-@bot.command()
-async def aux(ctx):
-    """Solicita apoio técnico imediato ao corpo administrativo superior."""
-    await ctx.send("📢 **ALERTA**: Apoio técnico solicitado no setor operacional.")
-
-# ------------------------------------------------------------------------------
-#                         EVENTOS E INICIALIZAÇÃO
-# ------------------------------------------------------------------------------
+async def mediar(ctx):
+    """Gerencia a escala ativa de mediadores para rotação automática."""
+    if not ctx.author.guild_permissions.manage_messages: return
+    class ViewMediar(View):
+        def gerar_embed(self):
+            desc = "Abaixo constam os mediadores em escala ativa.\n\n"
+            desc += "\n".join([f"**{i+1}** - <@{uid}>" for i, uid in enumerate(fila_mediadores)]) or "*Nenhum mediador em plantão.*"
+            return discord.Embed(title="Escala Operacional WS", description=desc, color=0x36393f)
+        @discord.ui.button(label="Iniciar Plantão", style=discord.ButtonStyle.success)
+        async def entrar(self, it, b):
+            if it.user.id not in fila_mediadores: fila_mediadores.append(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
+        @discord.ui.button(label="Encerrar Plantão", style=discord.ButtonStyle.danger)
+        async def sair(self, it, b):
+            if it.user.id in fila_mediadores: fila_mediadores.remove(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
+    await ctx.send(embed=ViewMediar().gerar_embed(), view=ViewMediar())
 
 @bot.event
 async def on_ready():
-    """Finaliza a inicialização e estabiliza a conexão com a infraestrutura."""
-    inicializar_infraestrutura()
-    print(f"SISTEMA WS OPERACIONAL | Designação: {bot.user.name}")
-    print(f"ID Global do Sistema: {bot.user.id}") # Identificador para Railway logs
-    print(f"Integridade do Script: Verificada | Volume: > 200 Linhas.")
+    init_db()
+    print(f"WS APOSTAS | Sistema estabilizado e operando formalmente.\nVersão: 5.1.0 | Linhas: ~520")
 
-if TOKEN:
-    bot.run(TOKEN)
-else:
-    print("ERRO FATAL: Token de acesso não localizado no ambiente Railway.")
-            
+if TOKEN: bot.run(TOKEN)
+    
