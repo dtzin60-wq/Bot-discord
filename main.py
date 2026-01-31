@@ -205,7 +205,7 @@ class ViewFilaPrincipal(View):
         self.jogadores = []; await it.message.edit(embed=self.get_embed())
 
 # ==============================================================================
-#               PAINEL PIX (SLASH COMMAND /pix)
+#               PAINEL PIX (SLASH COMMAND + CORREÇÃO DE TIMEOUT)
 # ==============================================================================
 
 class ViewPainelPix(View):
@@ -252,15 +252,23 @@ class ViewPainelPix(View):
 @bot.tree.command(name="pix", description="Gerencie sua chave PIX para recebimentos")
 async def slash_pix(interaction: discord.Interaction):
     """
-    Comando de barra (Slash) para abrir o painel PIX.
+    Comando Slash com DEFER para evitar timeout (A aplicação não respondeu).
     """
-    emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED_PADRAO)
-    emb.description = (
-        "Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
-        "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX."
-    )
-    emb.set_thumbnail(url=ICONE_ORG)
-    await interaction.response.send_message(embed=emb, view=ViewPainelPix())
+    try:
+        # Avisa ao Discord para esperar o processamento
+        await interaction.response.defer(ephemeral=False)
+        
+        emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED_PADRAO)
+        emb.description = (
+            "Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
+            "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX."
+        )
+        emb.set_thumbnail(url=ICONE_ORG)
+        
+        # Usa followup porque deferimos a resposta inicial
+        await interaction.followup.send(embed=emb, view=ViewPainelPix())
+    except Exception as e:
+        print(f"Erro no slash pix: {e}")
 
 # ==============================================================================
 #               PAINEL DE MEDIAÇÃO
@@ -350,9 +358,13 @@ async def canal_fila(ctx):
 @bot.event
 async def on_ready():
     init_db()
-    # Sincroniza o comando Slash com o Discord
-    await bot.tree.sync()
-    print("WS SYSTEM - OPERACIONAL (SLASH COMMANDS ATIVOS)")
+    # Sincroniza o comando Slash com o Discord para corrigir erros de "não existe"
+    try:
+        synced = await bot.tree.sync()
+        print(f"Sincronizados {len(synced)} comandos slash.")
+    except Exception as e:
+        print(f"Erro ao sincronizar comandos: {e}")
+    print("WS SYSTEM - OPERACIONAL")
 
 if TOKEN: bot.run(TOKEN)
-            
+        
