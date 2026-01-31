@@ -49,7 +49,76 @@ def db_query(query, params=()):
         return con.execute(query, params).fetchone()
 
 # ==============================================================================
-#               SISTEMA DE APOSTA (CONFIRMAÇÃO DENTRO DA THREAD)
+#               PAINEL PIX (RÉPLICA EXATA DA IMAGEM)
+# ==============================================================================
+
+class ViewPainelPix(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    # Botão 1: Chave pix (Verde)
+    @discord.ui.button(label="Chave pix", style=discord.ButtonStyle.success, emoji="❖")
+    async def btn_chave_pix(self, interaction: discord.Interaction, button: Button):
+        modal = Modal(title="Cadastrar Chave PIX")
+        nome = TextInput(label="Nome Completo")
+        chave = TextInput(label="Chave PIX")
+        modal.add_item(nome); modal.add_item(chave)
+        
+        async def on_submit(it: discord.Interaction):
+            db_exec("INSERT OR REPLACE INTO pix (user_id, nome, chave) VALUES (?,?,?)", 
+                    (it.user.id, nome.value, chave.value))
+            await it.response.send_message("✅ Chave cadastrada com sucesso!", ephemeral=True)
+        
+        modal.on_submit = on_submit
+        await interaction.response.send_modal(modal)
+
+    # Botão 2: Sua Chave (Verde)
+    @discord.ui.button(label="Sua Chave", style=discord.ButtonStyle.success, emoji="🔍")
+    async def btn_sua_chave(self, interaction: discord.Interaction, button: Button):
+        res = db_query("SELECT nome, chave FROM pix WHERE user_id=?", (interaction.user.id,))
+        if res:
+            await interaction.response.send_message(f"👤 **Titular:** {res[0]}\n🔑 **Chave:** `{res[1]}`", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Nenhuma chave cadastrada.", ephemeral=True)
+
+    # Botão 3: Ver Chave de Mediador (Cinza)
+    @discord.ui.button(label="Ver Chave de Mediador", style=discord.ButtonStyle.secondary, emoji="🔍")
+    async def btn_ver_chave(self, interaction: discord.Interaction, button: Button):
+        view_s = View()
+        sel = UserSelect(placeholder="Selecione o mediador")
+        async def cb(it):
+            res = db_query("SELECT nome, chave FROM pix WHERE user_id=?", (sel.values[0].id,))
+            if res:
+                await it.response.send_message(f"Dados de {sel.values[0].mention}:\nNome: {res[0]}\nChave: `{res[1]}`", ephemeral=True)
+            else:
+                await it.response.send_message("Mediador sem chave cadastrada.", ephemeral=True)
+        sel.callback = cb
+        view_s.add_item(sel)
+        await interaction.response.send_message("Selecione o mediador:", view=view_s, ephemeral=True)
+
+@bot.tree.command(name="pix", description="Gerencie sua chave PIX")
+async def slash_pix(interaction: discord.Interaction):
+    """
+    Comando Slash com o visual EXATO da imagem enviada.
+    """
+    try:
+        await interaction.response.defer(ephemeral=False)
+        
+        # Título e Descrição copiados da imagem
+        emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED_PADRAO)
+        emb.description = (
+            "Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
+            "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX."
+        )
+        # Ícone da ORG no canto superior direito (thumbnail)
+        emb.set_thumbnail(url=ICONE_ORG)
+        
+        await interaction.followup.send(embed=emb, view=ViewPainelPix())
+    except Exception as e:
+        print(f"Erro no slash pix: {e}")
+
+# ==============================================================================
+#               SISTEMA DE APOSTA (RESTANTE DO CÓDIGO)
 # ==============================================================================
 class ViewConfirmacaoThread(View):
     def __init__(self, modo, valor, jogadores, mediador_id):
@@ -70,7 +139,6 @@ class ViewConfirmacaoThread(View):
 
         self.confirmados.append(interaction.user.id)
         
-        # Feedback de confirmação
         embed_check = discord.Embed(color=0x2ecc71)
         embed_check.set_author(name="| Partida Confirmada", icon_url="https://cdn-icons-png.flaticon.com/512/148/148767.png")
         embed_check.description = (
@@ -98,9 +166,6 @@ class ViewConfirmacaoThread(View):
     async def btn_regras(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_message(f"🏳️ {interaction.user.mention} sugeriu combinar regras específicas.", ephemeral=False)
 
-# ==============================================================================
-#               SISTEMA DE APOSTA (FILA PRINCIPAL)
-# ==============================================================================
 class ViewFilaPrincipal(View):
     def __init__(self, modo, valor):
         super().__init__(timeout=None)
@@ -110,7 +175,6 @@ class ViewFilaPrincipal(View):
     def _config_buttons(self):
         self.clear_items()
         if "1V1" in self.modo.upper():
-            # Botões de Gelo Cinzas
             b1 = Button(label="Gelo Normal", style=discord.ButtonStyle.secondary)
             b2 = Button(label="Gelo Infinito", style=discord.ButtonStyle.secondary)
             b1.callback = lambda i: self.join(i, "Gelo Normal")
@@ -131,7 +195,6 @@ class ViewFilaPrincipal(View):
         emb.add_field(name="📋 Modalidade", value=f"**{self.modo}**", inline=True)
         emb.add_field(name="💰 Valor", value=f"**R$ {self.valor}**", inline=True)
         
-        # Lista formatada com tipo de gelo
         lista_formatada = []
         if not self.jogadores:
             texto_lista = "*Aguardando...*"
@@ -142,7 +205,6 @@ class ViewFilaPrincipal(View):
             texto_lista = "\n".join(lista_formatada)
 
         emb.add_field(name="👥 Jogadores", value=texto_lista, inline=False)
-        
         emb.set_image(url=BANNER_URL)
         return emb
 
@@ -150,12 +212,7 @@ class ViewFilaPrincipal(View):
         if any(j['id'] == it.user.id for j in self.jogadores):
             return await it.response.send_message("Já está na fila.", ephemeral=True)
         
-        self.jogadores.append({
-            'id': it.user.id, 
-            'm': it.user.mention, 
-            'tipo': tipo
-        })
-        
+        self.jogadores.append({'id': it.user.id, 'm': it.user.mention, 'tipo': tipo})
         await it.response.edit_message(embed=self.get_embed())
         
         limite = int(self.modo[0]) * 2 if self.modo[0].isdigit() else 2
@@ -178,7 +235,6 @@ class ViewFilaPrincipal(View):
         ch = bot.get_channel(int(cid[0]))
         th = await ch.create_thread(name=f"Sessão-{self.valor}", type=discord.ChannelType.public_thread)
         
-        # Embed dentro do tópico
         embed_topico = discord.Embed(title="Aguardando Confirmações", color=COR_CONFIRMACAO)
         embed_topico.set_thumbnail(url=ICONE_ORG)
         
@@ -201,78 +257,8 @@ class ViewFilaPrincipal(View):
 
         view_c = ViewConfirmacaoThread(self.modo, self.valor, self.jogadores, med)
         await th.send(content=" ".join([j['m'] for j in self.jogadores]), embed=embed_topico, view=view_c)
-        
         self.jogadores = []; await it.message.edit(embed=self.get_embed())
 
-# ==============================================================================
-#               PAINEL PIX (SLASH COMMAND + CORREÇÃO DE TIMEOUT)
-# ==============================================================================
-
-class ViewPainelPix(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Chave pix", style=discord.ButtonStyle.success, emoji="❖")
-    async def btn_chave_pix(self, interaction: discord.Interaction, button: Button):
-        modal = Modal(title="Cadastrar Chave PIX")
-        nome = TextInput(label="Nome Completo")
-        chave = TextInput(label="Chave PIX")
-        modal.add_item(nome); modal.add_item(chave)
-        
-        async def on_submit(it: discord.Interaction):
-            db_exec("INSERT OR REPLACE INTO pix (user_id, nome, chave) VALUES (?,?,?)", 
-                    (it.user.id, nome.value, chave.value))
-            await it.response.send_message("✅ Chave cadastrada com sucesso!", ephemeral=True)
-        
-        modal.on_submit = on_submit
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="Sua Chave", style=discord.ButtonStyle.success, emoji="🔍")
-    async def btn_sua_chave(self, interaction: discord.Interaction, button: Button):
-        res = db_query("SELECT nome, chave FROM pix WHERE user_id=?", (interaction.user.id,))
-        if res:
-            await interaction.response.send_message(f"👤 **Titular:** {res[0]}\n🔑 **Chave:** `{res[1]}`", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Nenhuma chave cadastrada.", ephemeral=True)
-
-    @discord.ui.button(label="Ver Chave de Mediador", style=discord.ButtonStyle.secondary, emoji="🔍")
-    async def btn_ver_chave(self, interaction: discord.Interaction, button: Button):
-        view_s = View()
-        sel = UserSelect(placeholder="Selecione o mediador")
-        async def cb(it):
-            res = db_query("SELECT nome, chave FROM pix WHERE user_id=?", (sel.values[0].id,))
-            if res:
-                await it.response.send_message(f"Dados de {sel.values[0].mention}:\nNome: {res[0]}\nChave: `{res[1]}`", ephemeral=True)
-            else:
-                await it.response.send_message("Mediador sem chave cadastrada.", ephemeral=True)
-        sel.callback = cb
-        view_s.add_item(sel)
-        await interaction.response.send_message("Selecione o mediador:", view=view_s, ephemeral=True)
-
-@bot.tree.command(name="pix", description="Gerencie sua chave PIX para recebimentos")
-async def slash_pix(interaction: discord.Interaction):
-    """
-    Comando Slash com DEFER para evitar timeout (A aplicação não respondeu).
-    """
-    try:
-        # Avisa ao Discord para esperar o processamento
-        await interaction.response.defer(ephemeral=False)
-        
-        emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED_PADRAO)
-        emb.description = (
-            "Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
-            "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX."
-        )
-        emb.set_thumbnail(url=ICONE_ORG)
-        
-        # Usa followup porque deferimos a resposta inicial
-        await interaction.followup.send(embed=emb, view=ViewPainelPix())
-    except Exception as e:
-        print(f"Erro no slash pix: {e}")
-
-# ==============================================================================
-#               PAINEL DE MEDIAÇÃO
-# ==============================================================================
 class ViewPainelMediar(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -325,9 +311,6 @@ async def mediar(ctx):
         view = ViewPainelMediar()
         await ctx.send(embed=view.gerar_embed(), view=view)
 
-# ==============================================================================
-#               ADMINISTRAÇÃO
-# ==============================================================================
 @bot.command()
 async def fila(ctx):
     if not ctx.author.guild_permissions.administrator: return
@@ -358,7 +341,6 @@ async def canal_fila(ctx):
 @bot.event
 async def on_ready():
     init_db()
-    # Sincroniza o comando Slash com o Discord para corrigir erros de "não existe"
     try:
         synced = await bot.tree.sync()
         print(f"Sincronizados {len(synced)} comandos slash.")
@@ -367,4 +349,4 @@ async def on_ready():
     print("WS SYSTEM - OPERACIONAL")
 
 if TOKEN: bot.run(TOKEN)
-        
+            
