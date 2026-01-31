@@ -11,9 +11,9 @@ import asyncio
 # ==============================================================================
 TOKEN = os.getenv("TOKEN")
 
-# Cores e Ícones baseados nos seus prints
-COR_EMBED_PADRAO = 0x2b2d31 # Cinza escuro
-COR_CONFIRMACAO = 0x2ecc71  # Verde lateral
+# Cores e Ícones
+COR_EMBED_PADRAO = 0x2b2d31 # Cinza escuro (Discord)
+COR_CONFIRMACAO = 0x2ecc71  # Verde Sucesso
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 
@@ -69,7 +69,7 @@ class ViewConfirmacaoThread(View):
 
         self.confirmados.append(interaction.user.id)
         
-        # Feedback de confirmação (Estilo Imagem 3)
+        # Feedback de confirmação
         embed_check = discord.Embed(color=0x2ecc71)
         embed_check.set_author(name="| Partida Confirmada", icon_url="https://cdn-icons-png.flaticon.com/512/148/148767.png")
         embed_check.description = (
@@ -130,32 +130,47 @@ class ViewFilaPrincipal(View):
         emb.add_field(name="📋 Modalidade", value=f"**{self.modo}**", inline=True)
         emb.add_field(name="💰 Valor", value=f"**R$ {self.valor}**", inline=True)
         
-        # ALTERAÇÃO AQUI: "Jogadores" ao invés de "Inscritos"
-        lst = "\n".join([f"👤 {j['m']}" for j in self.jogadores]) or "*Aguardando...*"
-        emb.add_field(name="👥 Jogadores", value=lst, inline=False)
+        # ALTERAÇÃO SOLICITADA: Mostra o tipo de gelo ao lado do nome na lista
+        lista_formatada = []
+        if not self.jogadores:
+            texto_lista = "*Aguardando...*"
+        else:
+            for p in self.jogadores:
+                # Se tiver tipo (gelo), adiciona. Se não, só o mention.
+                detalhe = f" - {p['tipo']}" if p.get('tipo') else ""
+                lista_formatada.append(f"👤 {p['m']}{detalhe}")
+            texto_lista = "\n".join(lista_formatada)
+
+        emb.add_field(name="👥 Jogadores", value=texto_lista, inline=False)
         
         emb.set_image(url=BANNER_URL)
         return emb
 
     async def join(self, it: discord.Interaction, tipo):
+        # Verifica se já está na fila
         if any(j['id'] == it.user.id for j in self.jogadores):
             return await it.response.send_message("Já está na fila.", ephemeral=True)
         
-        if tipo: await it.channel.send(f"{it.user.mention}-{tipo}")
-
-        self.jogadores.append({'id': it.user.id, 'm': it.user.mention})
-        await it.message.edit(embed=self.get_embed())
+        # Adiciona o jogador COM O TIPO DE GELO (se houver)
+        self.jogadores.append({
+            'id': it.user.id, 
+            'm': it.user.mention, 
+            'tipo': tipo # Armazena "Gelo Normal" ou "Gelo Infinito"
+        })
+        
+        await it.response.edit_message(embed=self.get_embed())
         
         limite = int(self.modo[0]) * 2 if self.modo[0].isdigit() else 2
         if len(self.jogadores) >= limite:
-            await self.start_thread(it, tipo)
+            await self.start_thread(it)
 
-    async def leave(self, it):
+    async def leave(self, it: discord.Interaction):
         self.jogadores = [j for j in self.jogadores if j['id'] != it.user.id]
-        await it.message.edit(embed=self.get_embed())
+        await it.response.edit_message(embed=self.get_embed())
 
-    async def start_thread(self, it, tipo):
-        if not fila_mediadores: return await it.channel.send("⚠️ Sem mediadores.", delete_after=5)
+    async def start_thread(self, it):
+        if not fila_mediadores: 
+            return await it.channel.send("⚠️ Sem mediadores.", delete_after=5)
         
         med = fila_mediadores.pop(0); fila_mediadores.append(med)
         
@@ -165,14 +180,18 @@ class ViewFilaPrincipal(View):
         ch = bot.get_channel(int(cid[0]))
         th = await ch.create_thread(name=f"Sessão-{self.valor}", type=discord.ChannelType.public_thread)
         
-        # Embed dentro do tópico (Estilo Imagem 1)
+        # Embed dentro do tópico
         embed_topico = discord.Embed(title="Aguardando Confirmações", color=COR_CONFIRMACAO)
         embed_topico.set_thumbnail(url=ICONE_ORG)
         
-        modo_txt = f"{self.modo} | {tipo if tipo else 'Padrão'}"
+        # Pega o tipo de gelo do primeiro jogador para o título (ou genérico)
+        tipo_exibicao = self.jogadores[0].get('tipo') if self.jogadores else "Padrão"
+        modo_txt = f"{self.modo} | {tipo_exibicao if tipo_exibicao else 'Padrão'}"
+        
         embed_topico.add_field(name="👑 Modo:", value=f"```{modo_txt}```", inline=False)
         embed_topico.add_field(name="💎 Valor da aposta:", value=f"```{self.valor}```", inline=False)
         
+        # Lista simples dentro do tópico
         jog_txt = "\n".join([j['m'] for j in self.jogadores])
         embed_topico.add_field(name="⚡ Jogadores:", value=jog_txt, inline=False)
         
@@ -190,11 +209,12 @@ class ViewFilaPrincipal(View):
         self.jogadores = []; await it.message.edit(embed=self.get_embed())
 
 # ==============================================================================
-#               PAINEL PIX (CORREÇÃO DO COMANDO)
+#               PAINEL PIX (CORRIGIDO E FUNCIONAL)
 # ==============================================================================
+
 class ViewPainelPix(View):
     """
-    View global para o comando .Pix (Garante funcionamento correto).
+    View global para o comando .Pix.
     """
     def __init__(self):
         super().__init__(timeout=None)
@@ -238,14 +258,13 @@ class ViewPainelPix(View):
 
 @bot.command(name="Pix")
 async def Pix(ctx):
-    """Gera o painel de Pix (Correção aplicada)."""
+    """Gera o painel de Pix funcional."""
     emb = discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED_PADRAO)
     emb.description = (
         "Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
         "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX."
     )
     emb.set_thumbnail(url=ICONE_ORG)
-    # Importante: Instancia a classe que está no escopo global
     await ctx.send(embed=emb, view=ViewPainelPix())
 
 # ==============================================================================
@@ -339,4 +358,4 @@ async def on_ready():
     print("WS SYSTEM - OPERACIONAL")
 
 if TOKEN: bot.run(TOKEN)
-                       
+                
