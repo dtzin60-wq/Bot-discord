@@ -397,3 +397,4 @@ async def mediar(ctx):
             
         @discord.ui.button(label="Painel Staff", style=discord.ButtonStyle.secondary, emoji="⚙️")
         async def staff(self, it, b): await it.response.send
+bot.run(TOKEN)
