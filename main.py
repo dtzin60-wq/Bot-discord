@@ -1,12 +1,15 @@
-import discord, sqlite3, os, asyncio
+import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput, UserSelect, ChannelSelect
+import sqlite3
+import os
+import asyncio
 
 # === CONFIGURAÇÕES ===
 TOKEN = os.getenv("TOKEN")
 COR_EMBED = 0x2b2d31 
-COR_VERDE = 0x2ecc71
+COR_VERDE = 0x2ecc71 
 ICONE = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 BANNER = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 BONECA = "https://i.imgur.com/Xw0yYgH.png"
@@ -16,12 +19,19 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 fila_mediadores = []
 
-# === BANCO DE DADOS ===
+# === BANCO DE DADOS (PADRÃO SQLITE3) ===
 def db_exec(query, params=()):
-    with sqlite3.connect(DB_NAME) as con: con.execute(query, params); con.commit()
+    try:
+        with sqlite3.connect(DB_NAME) as con:
+            con.execute(query, params)
+            con.commit()
+    except: pass
 
 def db_query(query, params=()):
-    with sqlite3.connect(DB_NAME) as con: return con.execute(query, params).fetchone()
+    try:
+        with sqlite3.connect(DB_NAME) as con:
+            return con.execute(query, params).fetchone()
+    except: return None
 
 def init_db():
     db_exec("CREATE TABLE IF NOT EXISTS pix (user_id INTEGER PRIMARY KEY, nome TEXT, chave TEXT, qrcode TEXT)")
@@ -30,13 +40,16 @@ def init_db():
     db_exec("CREATE TABLE IF NOT EXISTS counters (tipo TEXT PRIMARY KEY, contagem INTEGER DEFAULT 0)")
     db_exec("CREATE TABLE IF NOT EXISTS perfis (user_id INTEGER PRIMARY KEY, vitorias INTEGER DEFAULT 0, derrotas INTEGER DEFAULT 0, consecutivas INTEGER DEFAULT 0, total_partidas INTEGER DEFAULT 0, coins INTEGER DEFAULT 0)")
 
-def get_conf(k): r=db_query("SELECT valor FROM config WHERE chave=?", (k,)); return r[0] if r else None
+def get_conf(k):
+    r = db_query("SELECT valor FROM config WHERE chave=?", (k,))
+    return r[0] if r else None
 
 def inc_counter(t): 
     with sqlite3.connect(DB_NAME) as c:
         c.execute("INSERT OR IGNORE INTO counters (tipo, contagem) VALUES (?, 0)", (t,))
         c.execute("UPDATE counters SET contagem = contagem + 1 WHERE tipo = ?", (t,))
-        c.commit(); return c.execute("SELECT contagem FROM counters WHERE tipo = ?", (t,)).fetchone()[0]
+        c.commit()
+        return c.execute("SELECT contagem FROM counters WHERE tipo = ?", (t,)).fetchone()[0]
 
 def reg_stats(u, win):
     db_exec("INSERT OR IGNORE INTO perfis (user_id) VALUES (?)", (u,))
@@ -232,3 +245,4 @@ async def fila(ctx):
 async def on_ready(): init_db(); await bot.tree.sync(); print(f"ONLINE: {bot.user}")
 
 if TOKEN: bot.run(TOKEN)
+                
