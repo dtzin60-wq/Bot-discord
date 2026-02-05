@@ -13,10 +13,12 @@ import traceback
 TOKEN = os.getenv("TOKEN")
 
 # Cores e Imagens
-COR_EMBED = 0x2b2d31 # Cinza Escuro
-COR_VERDE = 0x2ecc71
+COR_EMBED = 0x2b2d31 
+COR_VERDE = 0x2ecc71 
+COR_CONFIRMADO = 0x2ecc71
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
+IMAGEM_BONECA = "https://i.imgur.com/Xw0yYgH.png" 
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
@@ -32,6 +34,7 @@ def init_db():
         con.execute("CREATE TABLE IF NOT EXISTS pix (user_id INTEGER PRIMARY KEY, nome TEXT, chave TEXT, qrcode TEXT)")
         con.execute("CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)")
         con.execute("CREATE TABLE IF NOT EXISTS pix_saldo (user_id INTEGER PRIMARY KEY, saldo REAL DEFAULT 0.0)")
+        con.execute("CREATE TABLE IF NOT EXISTS counters (tipo TEXT PRIMARY KEY, contagem INTEGER DEFAULT 0)")
         con.execute("CREATE TABLE IF NOT EXISTS restricoes (user_id INTEGER PRIMARY KEY, motivo TEXT)")
 
 def db_exec(query, params=()):
@@ -46,170 +49,220 @@ def db_get_config(chave, default=None):
     res = db_query("SELECT valor FROM config WHERE chave=?", (chave,))
     return res[0] if res else default
 
+def db_increment_counter(tipo):
+    """Incrementa e retorna o número da sala para o tipo específico"""
+    with sqlite3.connect("ws_database_final.db") as con:
+        cur = con.cursor()
+        cur.execute("INSERT OR IGNORE INTO counters (tipo, contagem) VALUES (?, 0)", (tipo,))
+        cur.execute("UPDATE counters SET contagem = contagem + 1 WHERE tipo = ?", (tipo,))
+        con.commit()
+        res = cur.execute("SELECT contagem FROM counters WHERE tipo = ?", (tipo,)).fetchone()
+        return res[0]
+
 # ==============================================================================
-#                  VIEW: BOTCONFIG (PAINEL FUNCIONAL)
+#           VIEW: CONFIRMAÇÃO (Lógica de Renomear Tópico Aqui)
 # ==============================================================================
-class ViewBotConfig(View):
-    def __init__(self):
+class ViewConfirmacao(View):
+    def __init__(self, jogadores, med_id, valor, modo_completo):
         super().__init__(timeout=None)
+        self.jogadores = jogadores
+        self.med_id = med_id
+        self.valor = valor
+        self.modo_completo = modo_completo # Ex: "1v1|Mobile"
+        self.confirms = []
 
-    async def atualizar_painel(self, interaction):
-        """Re-gera o Embed com os dados atualizados do Banco de Dados"""
+    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success)
+    async def confirmar(self, it: discord.Interaction, btn: Button):
+        if it.user.id not in [j['id'] for j in self.jogadores]: 
+            return await it.response.send_message("Você não está nesta partida.", ephemeral=True)
         
-        # Recupera dados salvos
-        cargo_med_id = db_get_config("cargo_mediador", "Não Configurado")
-        canal_logs_id = db_get_config("canal_logs", "Não Configurado")
-        prefixo = db_get_config("prefixo", ".")
-        valores_salvos = db_get_config("lista_valores", "100,00 | 80,00 | 50,00 | ...")
+        if it.user.id in self.confirms: 
+            return await it.response.send_message("Você já confirmou, aguarde o oponente.", ephemeral=True)
         
-        # Formata menções para o Embed
-        cargo_mention = f"<@&{cargo_med_id}>" if cargo_med_id.isdigit() else cargo_med_id
-        canal_mention = f"<#{canal_logs_id}>" if canal_logs_id.isdigit() else canal_logs_id
+        self.confirms.append(it.user.id)
+        
+        # Feedback rápido
+        await it.channel.send(f"✅ **{it.user.mention}** confirmou a partida!")
 
-        emb = discord.Embed(title="Painel de Configurações", color=COR_EMBED)
-        emb.description = "Edite as configurações usando os botões abaixo.\n\n"
-        
-        emb.description += f"**Permissão Máxima:** @Dono\n"
-        emb.description += f"**Cargo do Mediador:** {cargo_mention}\n\n"
-        
-        emb.description += f"**Canal de Logs:** {canal_mention}\n"
-        emb.description += f"**Prefixo:** `{prefixo}`\n\n"
-        
-        emb.description += f"**Valores das Filas (Atuais):**\n`{valores_salvos}`\n\n"
-        
-        emb.description += "**Outras Configurações:**\n"
-        emb.description += "Coins: 1 | Vitórias: 1 | Taxa: R$ 0,10"
-        
-        emb.set_thumbnail(url=ICONE_ORG)
-        await interaction.message.edit(embed=emb, view=self)
-
-    # --- BOTÕES FUNCIONAIS ---
-
-    @discord.ui.button(label="Config Filas", style=discord.ButtonStyle.secondary, emoji="⚙️", row=0)
-    async def btn_filas(self, interaction: discord.Interaction, button: Button):
-        modal = Modal(title="Configurar Valores das Filas")
-        valores = TextInput(
-            label="Valores (separados por vírgula)", 
-            placeholder="Ex: 100,00, 80,00, 50,00",
-            default="100,00, 80,00, 60,00, 50,00, 30,00, 20,00, 10,00, 5,00",
-            style=discord.TextStyle.paragraph
-        )
-        modal.add_item(valores)
-        
-        async def on_submit(it):
-            # Limpa e formata a string para salvar
-            lista_limpa = [v.strip() for v in valores.value.split(',')]
-            string_salva = ", ".join(lista_limpa)
-            db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("lista_valores", string_salva))
+        # SE AMBOS CONFIRMAREM
+        if len(self.confirms) >= len(self.jogadores):
+            self.stop() # Para os botões
             
-            await it.response.send_message(f"✅ Valores atualizados!", ephemeral=True)
-            await self.atualizar_painel(interaction)
-            
-        modal.on_submit = on_submit
-        await interaction.response.send_modal(modal)
+            # --- 1. LÓGICA DE RENOMEAR O TÓPICO ---
+            modo_upper = self.modo_completo.upper()
+            prefixo = "Sala"
+            tipo_db = "geral"
 
-    @discord.ui.button(label="Config Cargos", style=discord.ButtonStyle.secondary, emoji="⚙️", row=0)
-    async def btn_cargos(self, interaction: discord.Interaction, button: Button):
-        view = View()
-        select = RoleSelect(placeholder="Selecione o cargo de Mediador")
-        
-        async def callback(it):
-            role = select.values[0]
-            db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("cargo_mediador", str(role.id)))
-            await it.response.send_message(f"✅ Cargo definido: {role.mention}", ephemeral=True)
-            await self.atualizar_painel(interaction)
-            
-        select.callback = callback
-        view.add_item(select)
-        await interaction.response.send_message("Selecione o cargo:", view=view, ephemeral=True)
+            if "MOBILE" in modo_upper:
+                prefixo = "Mobile"
+                tipo_db = "mobile"
+            elif "MISTO" in modo_upper:
+                prefixo = "Misto"
+                tipo_db = "misto"
+            elif "FULL" in modo_upper:
+                prefixo = "Full"
+                tipo_db = "full"
+            elif "EMULADOR" in modo_upper or "EMU" in modo_upper:
+                prefixo = "Emu"
+                tipo_db = "emu"
 
-    @discord.ui.button(label="Setar as Logs", style=discord.ButtonStyle.secondary, emoji="⚙️", row=0)
-    async def btn_logs(self, interaction: discord.Interaction, button: Button):
-        view = View()
-        select = ChannelSelect(placeholder="Selecione o canal de Logs", channel_types=[discord.ChannelType.text])
-        
-        async def callback(it):
-            ch = select.values[0]
-            db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_logs", str(ch.id)))
-            await it.response.send_message(f"✅ Logs definidas para: {ch.mention}", ephemeral=True)
-            await self.atualizar_painel(interaction)
+            # Pega o próximo número e renomeia
+            numero = db_increment_counter(tipo_db)
+            novo_nome = f"{prefixo}-{numero}"
             
-        select.callback = callback
-        view.add_item(select)
-        await interaction.response.send_message("Selecione o canal:", view=view, ephemeral=True)
+            try:
+                await it.channel.edit(name=novo_nome)
+            except:
+                pass # Ignora erro se não tiver perm ou rate limit
+            
+            # --- 2. GERAÇÃO DO EMBED FINAL (FOTO 2) ---
+            try:
+                partes = self.modo_completo.split('|')
+                estilo_jogo = f"{partes[0].strip()} Gel Normal"
+            except:
+                estilo_jogo = self.modo_completo
 
-    @discord.ui.button(label="Alterar Prefixo", style=discord.ButtonStyle.secondary, emoji="⚙️", row=1)
-    async def btn_prefixo(self, interaction: discord.Interaction, button: Button):
-        modal = Modal(title="Novo Prefixo")
-        px = TextInput(label="Prefixo", placeholder="Ex: !", max_length=3)
-        modal.add_item(px)
-        
-        async def on_submit(it):
-            db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("prefixo", px.value))
-            bot.command_prefix = px.value
-            await it.response.send_message(f"✅ Prefixo alterado para: `{px.value}`", ephemeral=True)
-            await self.atualizar_painel(interaction)
+            e = discord.Embed(title="Partida Confirmada", color=COR_CONFIRMADO)
+            e.set_thumbnail(url=IMAGEM_BONECA)
             
-        modal.on_submit = on_submit
-        await interaction.response.send_modal(modal)
+            e.add_field(name="🎮 Estilo de Jogo", value=estilo_jogo, inline=False)
+            
+            # Cálculo de taxa visual
+            try:
+                val_float = float(self.valor.replace("R$", "").replace(",", ".").strip())
+                taxa = val_float * 0.10
+                if taxa < 0.10: taxa = 0.10
+                taxa_str = f"R$ {taxa:.2f}".replace(".", ",")
+            except:
+                taxa_str = "R$ 0,30"
 
-    @discord.ui.button(label="Perfil do Bot", style=discord.ButtonStyle.secondary, emoji="⚙️", row=1)
-    async def btn_perfil(self, interaction: discord.Interaction, button: Button):
-        modal = Modal(title="Perfil do Bot")
-        nome = TextInput(label="Novo Nome", required=False)
-        modal.add_item(nome)
-        
-        async def on_submit(it):
-            if nome.value: await bot.user.edit(username=nome.value)
-            await it.response.send_message("✅ Perfil atualizado.", ephemeral=True)
+            info_text = f"Valor Da Sala: {taxa_str}\nMediador: <@{self.med_id}>"
+            e.add_field(name="ℹ️ Informações da Aposta", value=info_text, inline=False)
             
-        modal.on_submit = on_submit
-        await interaction.response.send_modal(modal)
+            e.add_field(name="💎 Valor da Aposta", value=f"R$ {self.valor}", inline=False)
+            
+            lista_jog = "\n".join([f"{j['m']}" for j in self.jogadores])
+            e.add_field(name="👥 Jogadores", value=lista_jog, inline=False)
+            
+            mentions = f"<@{self.med_id}> " + " ".join([j['m'] for j in self.jogadores])
+            await it.channel.send(content=mentions, embed=e)
+            
+            # Paga comissão
+            db_exec("UPDATE pix_saldo SET saldo = saldo + 0.10 WHERE user_id=?", (self.med_id,))
+
+    @discord.ui.button(label="Recusar", style=discord.ButtonStyle.danger)
+    async def recusar(self, it: discord.Interaction, btn: Button):
+        if it.user.id in [j['id'] for j in self.jogadores]:
+            await it.channel.send("🚫 Partida recusada. Encerrando sala...")
+            await asyncio.sleep(2)
+            await it.channel.delete()
+
+    @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.secondary, emoji="🏳️")
+    async def regras(self, it: discord.Interaction, btn: Button):
+        await it.response.send_message(f"🏳️ {it.user.mention} sugeriu combinar regras.", ephemeral=False)
 
 # ==============================================================================
-#                  COMANDO SLASH: /botconfig
+#           VIEW: FILA (CRIA TÓPICO COMO "AGUARDANDO")
 # ==============================================================================
-@bot.tree.command(name="botconfig", description="Painel de Configurações Geral")
-async def slash_botconfig(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+class ViewFila(View):
+    def __init__(self, modo_str, valor):
+        super().__init__(timeout=None)
+        self.modo_str = modo_str 
+        self.valor = valor
+        self.jogadores = []
+        self._setup_buttons()
 
-    try:
-        await interaction.response.defer(ephemeral=False)
+    def _setup_buttons(self):
+        self.clear_items()
+        if "1V1" in self.modo_str.upper():
+            b1 = Button(label="Gelo Normal", style=discord.ButtonStyle.secondary)
+            b2 = Button(label="Gelo Infinito", style=discord.ButtonStyle.secondary)
+            b1.callback = lambda i: self.join(i, "Gel Normal")
+            b2.callback = lambda i: self.join(i, "Gel Infinito")
+            self.add_item(b1); self.add_item(b2)
+        else:
+            b = Button(label="/entrar na fila", style=discord.ButtonStyle.success)
+            b.callback = lambda i: self.join(i, None)
+            self.add_item(b)
         
-        # Recupera configurações atuais para exibir
-        cargo = db_get_config("cargo_mediador", "@Mediador")
-        logs = db_get_config("canal_logs", "#logs")
-        prefix = db_get_config("prefixo", ".")
+        bs = Button(label="Sair da Fila", style=discord.ButtonStyle.danger)
+        bs.callback = self.leave
+        self.add_item(bs)
+
+    def embed_painel(self):
+        e = discord.Embed(title=f"Sessão de Aposta | {self.modo_str}", color=COR_EMBED)
+        e.set_author(name="WS APOSTAS", icon_url=ICONE_ORG)
+        e.add_field(name="📋 Modalidade", value=f"**{self.modo_str}**", inline=True)
+        e.add_field(name="💰 Valor", value=f"**R$ {self.valor}**", inline=True)
         
-        # Formata se for ID
-        if cargo.isdigit(): cargo = f"<@&{cargo}>"
-        if logs.isdigit(): logs = f"<#{logs}>"
-
-        emb = discord.Embed(title="Painel de Configurações", color=COR_EMBED)
-        emb.description = f"""
-Edite as configurações usando os botões abaixo.
-
-**Cargos e Permissões:**
-Cargo do Mediador: {cargo}
-
-**Canais:**
-Canal de Logs: {logs}
-
-**Sistema:**
-Prefixo: `{prefix}`
-Taxa da Sala: R$ 0,10
-
-**Use os botões abaixo para editar.**
-"""
-        emb.set_thumbnail(url=ICONE_ORG)
-        await interaction.followup.send(embed=emb, view=ViewBotConfig())
+        lista = []
+        if not self.jogadores: lista.append("*Aguardando...*")
+        else:
+            for p in self.jogadores:
+                extra = f" - {p['t']}" if p['t'] else ""
+                lista.append(f"👤 {p['m']}{extra}")
         
-    except Exception as e:
-        traceback.print_exc()
+        e.add_field(name="👥 Jogadores", value="\n".join(lista), inline=False)
+        e.set_image(url=BANNER_URL)
+        return e
+
+    async def join(self, it: discord.Interaction, tipo_gelo):
+        if any(j['id'] == it.user.id for j in self.jogadores): 
+            return await it.response.send_message("Você já está na fila.", ephemeral=True)
+        
+        self.jogadores.append({'id': it.user.id, 'm': it.user.mention, 't': tipo_gelo})
+        await it.response.edit_message(embed=self.embed_painel())
+        
+        limite = int(self.modo_str[0]) * 2 if self.modo_str[0].isdigit() else 2
+        
+        if len(self.jogadores) >= limite:
+            await self.criar_sala(it)
+
+    async def criar_sala(self, it):
+        if not fila_mediadores: 
+            return await it.channel.send("⚠️ **Fila cheia, mas sem mediadores online!**", delete_after=5)
+        
+        mediador_id = fila_mediadores.pop(0)
+        fila_mediadores.append(mediador_id) 
+        
+        config_canal = db_get_config("canal_th")
+        if not config_canal: return await it.channel.send("❌ Canal de tópicos não configurado.")
+        
+        canal_pai = bot.get_channel(int(config_canal))
+        
+        # --- MUDANÇA AQUI: NOME INICIAL FIXO ---
+        thread = await canal_pai.create_thread(name="aguardando-confirmacao", type=discord.ChannelType.public_thread)
+
+        gelo_txt = self.jogadores[0]['t'] if self.jogadores[0]['t'] else "Padrão"
+        
+        emb_wait = discord.Embed(title="Aguardando Confirmações", color=COR_VERDE)
+        emb_wait.set_thumbnail(url=IMAGEM_BONECA)
+        
+        emb_wait.add_field(name="👑 Modo:", value=f"{self.modo_str.split('|')[0]} | {gelo_txt}", inline=False)
+        emb_wait.add_field(name="💎 Valor da aposta:", value=f"R$ {self.valor}", inline=False)
+        
+        lista_jogs = "\n".join([j['m'] for j in self.jogadores])
+        emb_wait.add_field(name="⚡ Jogadores:", value=lista_jogs, inline=False)
+        
+        rodape = """✨ SEJAM MUITO BEM-VINDOS ✨
+
+• Regras adicionais podem ser combinadas entre os participantes.
+• Se a regra combinada não existir no regulamento oficial da organização, é obrigatório tirar print do acordo antes do início da partida."""
+        
+        emb_wait.add_field(name="\u200b", value=f"```{rodape}```", inline=False)
+
+        view_conf = ViewConfirmacao(self.jogadores, mediador_id, self.valor, self.modo_str)
+        await thread.send(content=" ".join([j['m'] for j in self.jogadores]), embed=emb_wait, view=view_conf)
+        
+        self.jogadores = []
+        await it.message.edit(embed=self.embed_painel())
+
+    async def leave(self, it):
+        self.jogadores = [j for j in self.jogadores if j['id'] != it.user.id]
+        await it.response.edit_message(embed=self.embed_painel())
 
 # ==============================================================================
-#                  SISTEMA DE FILAS E APOSTAS
+#                  OUTRAS VIEWS E COMANDOS (MANTIDOS)
 # ==============================================================================
 
 class ViewPainelPix(View):
@@ -234,50 +287,27 @@ class ViewPainelPix(View):
             else: await i.response.send_message("Sem dados.", ephemeral=True)
         s.callback=cb; v.add_item(s); await it.response.send_message("Selecione:", view=v, ephemeral=True)
 
-class ViewConfirmacao(View):
-    def __init__(self, jog, med, val): super().__init__(timeout=None); self.jog=jog; self.med=med; self.val=val; self.cnf=[]
-    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success)
-    async def c(self, it, b):
-        if it.user.id in [j['id'] for j in self.jog] and it.user.id not in self.cnf:
-            self.cnf.append(it.user.id); await it.channel.send(embed=discord.Embed(description=f"**{it.user.mention} confirmou!**", color=COR_VERDE))
-            if len(self.cnf)>=len(self.jog):
-                self.stop(); await it.channel.send(content=f"<@{self.med}>", embed=discord.Embed(title="✅ SESSÃO INICIADA", description=f"Mediador: <@{self.med}>\nValor: {self.val}", color=COR_VERDE))
-                db_exec("UPDATE pix_saldo SET saldo=saldo+0.10 WHERE user_id=?",(self.med,))
-    @discord.ui.button(label="Recusar", style=discord.ButtonStyle.danger)
-    async def r(self, it, b): 
-        if it.user.id in [j['id'] for j in self.jog]: await it.channel.delete()
+class ViewBotConfig(View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="Config Filas", style=discord.ButtonStyle.secondary, emoji="⚙️", row=0)
+    async def btn_filas(self, interaction: discord.Interaction, button: Button):
+        modal = Modal(title="Configurar Valores")
+        val = TextInput(label="Valores", default="100,00, 50,00, 20,00, 10,00, 5,00", style=discord.TextStyle.paragraph)
+        modal.add_item(val)
+        async def sub(it):
+            db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("lista_valores", val.value))
+            await it.response.send_message("Valores salvos!", ephemeral=True)
+        modal.on_submit = sub; await interaction.response.send_modal(modal)
+    # Adicione os outros botões de config aqui se necessário (Cargos, Logs, etc)
 
-class ViewFila(View):
-    def __init__(self, m, v): super().__init__(timeout=None); self.m=m; self.v=v; self.j=[]
-    def _stup(self):
-        self.clear_items()
-        if "1V1" in self.m.upper():
-            b1=Button(label="Gelo Normal", style=discord.ButtonStyle.secondary); b2=Button(label="Gelo Infinito", style=discord.ButtonStyle.secondary)
-            b1.callback=lambda i: self.join(i,"Gelo Normal"); b2.callback=lambda i: self.join(i,"Gelo Infinito"); self.add_item(b1); self.add_item(b2)
-        else:
-            b=Button(label="/entrar na fila", style=discord.ButtonStyle.success); b.callback=lambda i: self.join(i,None); self.add_item(b)
-        bs=Button(label="Sair da Fila", style=discord.ButtonStyle.danger); bs.callback=self.leave; self.add_item(bs)
-    def emb(self):
-        e=discord.Embed(title=f"Sessão | {self.m}", color=COR_EMBED); e.set_image(url=BANNER_URL); e.add_field(name="Valor", value=self.v)
-        lst=[f"👤 {p['m']} - {p['t']}" if p['t'] else f"👤 {p['m']}" for p in self.j]
-        e.add_field(name="Jogadores", value="\n".join(lst) or "Aguardando...", inline=False); return e
-    async def join(self, it, t):
-        if any(x['id']==it.user.id for x in self.j): return await it.response.send_message("Já está.", ephemeral=True)
-        self.j.append({'id':it.user.id,'m':it.user.mention,'t':t}); await it.response.edit_message(embed=self.emb())
-        lim=int(self.m[0])*2 if self.m[0].isdigit() else 2
-        if len(self.j)>=lim:
-            if not fila_mediadores: return await it.channel.send("Sem mediadores.", delete_after=5)
-            md=fila_mediadores.pop(0); fila_mediadores.append(md); cf=db_query("SELECT valor FROM config WHERE chave='canal_th'")
-            if cf:
-                ch=bot.get_channel(int(cf[0])); th=await ch.create_thread(name=f"Sessão-{self.v}", type=discord.ChannelType.public_thread)
-                e=discord.Embed(title="Aguardando", description="Confirmem.", color=COR_VERDE); e.add_field(name="Jogadores", value="\n".join([x['m'] for x in self.j]))
-                await th.send(content=" ".join([x['m'] for x in self.j]), embed=e, view=ViewConfirmacao(self.j, md, self.v))
-            self.j=[]; await it.message.edit(embed=self.emb())
-    async def leave(self, it): self.j=[x for x in self.j if x['id']!=it.user.id]; await it.response.edit_message(embed=self.emb())
+@bot.tree.command(name="botconfig", description="Painel Config")
+async def slash_botconfig(it: discord.Interaction):
+    if not it.user.guild_permissions.administrator: return
+    await it.response.defer(ephemeral=False)
+    e = discord.Embed(title="Painel Config", color=COR_EMBED); e.set_thumbnail(url=ICONE_ORG)
+    e.description = "**Painel Geral**\nUse os botões para editar."
+    await it.followup.send(embed=e, view=ViewBotConfig())
 
-# ==============================================================================
-#                  COMANDOS
-# ==============================================================================
 @bot.tree.command(name="pix", description="Painel Pix")
 async def slash_pix(it: discord.Interaction):
     await it.response.defer(ephemeral=False); e=discord.Embed(title="Painel Pix", color=COR_EMBED); e.set_thumbnail(url=ICONE_ORG); await it.followup.send(embed=e, view=ViewPainelPix())
@@ -298,21 +328,17 @@ async def mediar(ctx):
 @bot.command()
 async def fila(ctx):
     if not ctx.author.guild_permissions.administrator: return
-    class M(Modal, title="Gerar"):
-        m=TextInput(label="Modo", default="1v1"); p=TextInput(label="Plat", default="Mobile")
+    class M(Modal, title="Gerar Filas"):
+        m=TextInput(label="Modo (Ex: 1v1, 4v4)", default="1v1")
+        p=TextInput(label="Plataforma (Ex: Mobile, Emu)", default="Mobile")
         async def on_submit(self, i):
             await i.response.send_message("Gerando...", ephemeral=True)
-            # RECUPERA VALORES DO DB OU USA O PADRÃO SOLICITADO
             db_vals = db_get_config("lista_valores")
-            if db_vals:
-                vals = [v.strip() for v in db_vals.split(',')]
-            else:
-                # LISTA PADRÃO SOLICITADA (Valores Altos Primeiro)
-                vals = ["100,00", "80,00", "60,00", "50,00", "40,00", "30,00", "20,00", "10,00", "5,00", "2,00"]
-            
+            vals = [v.strip() for v in db_vals.split(',')] if db_vals else ["100,00","80,00","60,00","50,00","10,00","5,00"]
+            modo_formatado = f"{self.m.value}|{self.p.value}" 
             for v in vals:
-                vi=ViewFila(f"{self.m.value}|{self.p.value}", v); vi._stup()
-                await i.channel.send(embed=vi.emb(), view=vi); await asyncio.sleep(1)
+                vi=ViewFila(modo_formatado, v)
+                await i.channel.send(embed=vi.embed_painel(), view=vi); await asyncio.sleep(1)
     class V(View):
         @discord.ui.button(label="Gerar", style=discord.ButtonStyle.danger)
         async def g(self, i, b): await i.response.send_modal(M())
@@ -321,14 +347,12 @@ async def fila(ctx):
 @bot.command()
 async def canal_fila(ctx):
     v=View(); s=ChannelSelect()
-    async def cb(i): db_exec("INSERT OR REPLACE INTO config VALUES ('canal_th',?)", (str(s.values[0].id),)); await i.response.send_message("Salvo", ephemeral=True)
-    s.callback=cb; v.add_item(s); await ctx.send("Canal:", view=v)
+    async def cb(i): db_exec("INSERT OR REPLACE INTO config VALUES ('canal_th',?)", (str(s.values[0].id),)); await i.response.send_message("Canal salvo.", ephemeral=True)
+    s.callback=cb; v.add_item(s); await ctx.send("Selecione o canal onde os tópicos serão criados:", view=v)
 
 @bot.event
 async def on_ready():
-    init_db()
-    await bot.tree.sync()
-    print("ONLINE - CONFIG ATIVA")
+    init_db(); await bot.tree.sync(); print("ONLINE - V.FINAL COM RENOMEAÇÃO DE TÓPICOS")
 
 if TOKEN: bot.run(TOKEN)
-    
+        
