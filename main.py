@@ -59,7 +59,7 @@ def db_increment_counter(tipo):
         return res[0]
 
 # ==============================================================================
-#           VIEW: CONFIRMAÇÃO (Renomeia Tópico + Embed Foto 2)
+#           VIEW: CONFIRMAÇÃO E LÓGICA DE JOGO
 # ==============================================================================
 class ViewConfirmacao(View):
     def __init__(self, jogadores, med_id, valor, modo_completo):
@@ -84,7 +84,7 @@ class ViewConfirmacao(View):
         if len(self.confirms) >= len(self.jogadores):
             self.stop()
             
-            # 1. Renomear Tópico
+            # Renomear Tópico
             modo_upper = self.modo_completo.upper()
             prefixo = "Sala"
             tipo_db = "geral"
@@ -98,17 +98,14 @@ class ViewConfirmacao(View):
             try: await it.channel.edit(name=f"{prefixo}-{num}")
             except: pass
             
-            # 2. Embed Final
-            try:
-                estilo = f"{self.modo_completo.split('|')[0].strip()} Gel Normal"
-            except:
-                estilo = self.modo_completo
+            # Embed Final
+            try: estilo = f"{self.modo_completo.split('|')[0].strip()} Gel Normal"
+            except: estilo = self.modo_completo
 
             e = discord.Embed(title="Partida Confirmada", color=COR_CONFIRMADO)
             e.set_thumbnail(url=IMAGEM_BONECA)
             e.add_field(name="🎮 Estilo de Jogo", value=estilo, inline=False)
             
-            # Taxa 10%
             try:
                 v_f = float(self.valor.replace("R$","").replace(",",".").strip())
                 taxa = max(v_f * 0.10, 0.10)
@@ -150,9 +147,10 @@ class ViewFila(View):
         bs=Button(label="Sair da Fila", style=discord.ButtonStyle.danger); bs.callback=self.leave; self.add_item(bs)
 
     def emb(self):
-        e = discord.Embed(title=f"Sessão de Aposta | {self.modo_str}", color=COR_EMBED)
+        titulo_formatado = f"Aposta | {self.modo_str.replace('|', ' ')}"
+        e = discord.Embed(title=titulo_formatado, color=COR_EMBED)
         e.set_author(name="WS APOSTAS", icon_url=ICONE_ORG)
-        e.add_field(name="📋 Modalidade", value=f"**{self.modo_str}**", inline=True)
+        e.add_field(name="📋 Modalidade", value=f"**{self.modo_str.replace('|', ' ')}**", inline=True)
         e.add_field(name="💰 Valor", value=f"**R$ {self.valor}**", inline=True)
         lst = [f"👤 {j['m']} - {j['t']}" if j['t'] else f"👤 {j['m']}" for j in self.jogadores]
         e.add_field(name="👥 Jogadores", value="\n".join(lst) or "*Aguardando...*", inline=False)
@@ -185,7 +183,7 @@ class ViewFila(View):
         self.jogadores=[j for j in self.jogadores if j['id']!=it.user.id]; await it.response.edit_message(embed=self.emb())
 
 # ==============================================================================
-#           COMANDOS SLASH (NOVO /canal e /pix)
+#           PAINÉIS DE COMANDO
 # ==============================================================================
 
 class ViewPainelPix(View):
@@ -215,18 +213,19 @@ class ViewBotConfig(View):
     @discord.ui.button(label="Config Filas", style=discord.ButtonStyle.secondary, emoji="⚙️")
     async def btn_filas(self, it, b): await it.response.send_message("Use o comando .fila para gerar", ephemeral=True)
 
-@bot.tree.command(name="canal", description="Definir canal onde os tópicos serão criados")
-@app_commands.describe(canal="O canal de texto alvo")
-async def slash_canal(interaction: discord.Interaction, canal: discord.TextChannel):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("Apenas administradores.", ephemeral=True)
-    
-    db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_th", str(canal.id)))
-    await interaction.response.send_message(f"✅ Canal de tópicos definido para: {canal.mention}", ephemeral=True)
+# ==============================================================================
+#           COMANDOS PRINCIPAIS
+# ==============================================================================
 
 @bot.tree.command(name="pix", description="Painel Pix")
 async def slash_pix(it: discord.Interaction):
-    await it.response.defer(ephemeral=False); e=discord.Embed(title="Painel Pix", color=COR_EMBED); e.set_thumbnail(url=ICONE_ORG); await it.followup.send(embed=e, view=ViewPainelPix())
+    await it.response.defer(ephemeral=False)
+    e=discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED)
+    e.set_thumbnail(url=ICONE_ORG)
+    # DESCRIÇÃO IDÊNTICA À IMAGEM 1 PEDIDA
+    e.description = ("Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
+                     "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX.")
+    await it.followup.send(embed=e, view=ViewPainelPix())
 
 @bot.tree.command(name="botconfig", description="Painel Config")
 async def slash_botconfig(it: discord.Interaction):
@@ -236,59 +235,101 @@ async def slash_botconfig(it: discord.Interaction):
     e.description = "**Painel Geral**\nUse os botões para editar."
     await it.followup.send(embed=e, view=ViewBotConfig())
 
-# ==============================================================================
-#           COMANDOS DE PREFIXO (.mediar, .fila)
-# ==============================================================================
+@bot.tree.command(name="canal", description="Definir canal onde os tópicos serão criados")
+async def slash_canal(interaction: discord.Interaction, canal: discord.TextChannel):
+    if not interaction.user.guild_permissions.administrator: return
+    db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_th", str(canal.id)))
+    await interaction.response.send_message(f"✅ Canal definido: {canal.mention}", ephemeral=True)
+
 @bot.command()
 async def mediar(ctx):
     if not ctx.author.guild_permissions.manage_messages: return
-    class V(View):
-        def e(self): return discord.Embed(description="**Mediadores:**\n"+"\n".join([f"{i+1}. <@{u}>" for i,u in enumerate(fila_mediadores)]), color=COR_EMBED)
-        @discord.ui.button(label="Entrar", style=discord.ButtonStyle.success)
-        async def en(self,i,b): 
-            if i.user.id not in fila_mediadores: fila_mediadores.append(i.user.id); await i.response.edit_message(embed=self.e())
-        @discord.ui.button(label="Sair", style=discord.ButtonStyle.danger)
-        async def sa(self,i,b): 
-            if i.user.id in fila_mediadores: fila_mediadores.remove(i.user.id); await i.response.edit_message(embed=self.e())
-    v=V(); await ctx.send(embed=v.e(), view=v)
+    
+    # VIEW DO COMANDO .mediar
+    class ViewMediar(View):
+        def gerar_embed(self):
+            # Lista os mediadores
+            desc = "**Entre na fila para começar a mediar suas filas**\n\n"
+            if not fila_mediadores: desc += "*A lista está vazia.*"
+            else:
+                for i, uid in enumerate(fila_mediadores): desc += f"**{i+1} •** <@{uid}> {uid}\n"
+            emb = discord.Embed(title="Painel da fila controladora", description=desc, color=COR_EMBED)
+            emb.set_thumbnail(url=ICONE_ORG)
+            return emb
+
+        @discord.ui.button(label="Entrar na fila", style=discord.ButtonStyle.success, emoji="🟢")
+        async def entrar(self, it, b): 
+            if it.user.id not in fila_mediadores: fila_mediadores.append(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
+        
+        @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.danger, emoji="🔴")
+        async def sair(self, it, b): 
+            if it.user.id in fila_mediadores: fila_mediadores.remove(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
+
+        # BOTÃO REMOVER MEDIADOR (IGUAL IMAGEM 2)
+        @discord.ui.button(label="Remover Mediador", style=discord.ButtonStyle.secondary, emoji="⚙️")
+        async def remover(self, it: discord.Interaction, b: Button):
+            if not it.user.guild_permissions.manage_messages: return
+            
+            # Sub-view para selecionar quem remover
+            view_rem = View()
+            select = UserSelect(placeholder="Selecione o mediador para remover")
+            
+            async def cb_remover(interacao):
+                alvo = select.values[0]
+                if alvo.id in fila_mediadores:
+                    fila_mediadores.remove(alvo.id)
+                    # Atualiza o painel principal
+                    await it.message.edit(embed=self.gerar_embed())
+                    await interacao.response.send_message(f"✅ **{alvo.name}** foi removido da escala.", ephemeral=True)
+                else:
+                    await interacao.response.send_message("❌ Este usuário não está na fila.", ephemeral=True)
+            
+            select.callback = cb_remover
+            view_rem.add_item(select)
+            await it.response.send_message("Selecione quem remover:", view=view_rem, ephemeral=True)
+
+        @discord.ui.button(label="Painel Staff", style=discord.ButtonStyle.secondary, emoji="⚙️")
+        async def staff(self, it, b): await it.response.send_message("Painel Staff", ephemeral=True)
+
+    v = ViewMediar()
+    await ctx.send(embed=v.gerar_embed(), view=v)
 
 @bot.command()
 async def fila(ctx):
     if not ctx.author.guild_permissions.administrator: return
     
-    class ModalFila(Modal, title="Gerar Filas Personalizadas"):
-        m = TextInput(label="Modo (Ex: 1v1)", default="1v1")
-        p = TextInput(label="Plataforma (Ex: Mobile)", default="Mobile")
-        # NOVO CAMPO: VALORES PERSONALIZADOS
-        v = TextInput(label="Valores (Max 15, separe por vírgula)", 
-                      default="100,00, 50,00, 20,00, 10,00, 5,00",
-                      style=discord.TextStyle.paragraph)
+    class ModalFila(Modal, title="Gerar Filas"):
+        m = TextInput(label="Modo", default="1v1")
+        p = TextInput(label="Plataforma", default="Mobile")
+        v = TextInput(label="Valores (ex: 100,00, 50,00)", default="100,00, 80,00, 50,00, 30,00, 20,00, 10,00, 5,00", style=discord.TextStyle.paragraph)
 
         async def on_submit(self, i):
             await i.response.send_message("Gerando filas...", ephemeral=True)
-            
-            # Processa a string de valores
             raw_vals = self.v.value.split(',')
-            # Limpa espaços e pega no máximo 15
             vals = [val.strip() for val in raw_vals if val.strip()]
             if len(vals) > 15: vals = vals[:15]
             
             modo_formatado = f"{self.m.value}|{self.p.value}" 
             
+            # GERAÇÃO IMEDIATA (SEM SLEEP GRANDE)
             for val in vals:
                 vi = ViewFila(modo_formatado, val)
                 await i.channel.send(embed=vi.embed_painel(), view=vi)
-                await asyncio.sleep(1) # Delay anti-spam
+                await asyncio.sleep(0.5) # Mínimo para não tomar rate limit
                 
-    class V(View):
-        @discord.ui.button(label="Gerar", style=discord.ButtonStyle.danger)
-        async def g(self, i, b): await i.response.send_modal(ModalFila())
+    await ctx.send("Painel Admin", view=View(timeout=None).add_item(Button(label="Gerar", style=discord.ButtonStyle.danger, custom_id="gerar_btn")))
     
-    await ctx.send("Painel Admin", view=V())
+    # Gambiarra para abrir modal via comando direto (o discord exige interação)
+    # Mas como você pediu ".fila", vou mandar um botão para clicar e abrir o modal
+    class ViewBotaoGerar(View):
+        @discord.ui.button(label="Gerar Filas", style=discord.ButtonStyle.danger)
+        async def g(self, it, b): await it.response.send_modal(ModalFila())
+    
+    await ctx.send("Clique abaixo para configurar:", view=ViewBotaoGerar())
 
 @bot.event
 async def on_ready():
-    init_db(); await bot.tree.sync(); print("ONLINE - V.FINAL COM /CANAL E FILAS PERSONALIZADAS")
+    init_db(); await bot.tree.sync(); print("ONLINE - TUDO PRONTO")
 
 if TOKEN: bot.run(TOKEN)
-            
+    
