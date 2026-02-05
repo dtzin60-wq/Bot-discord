@@ -10,10 +10,9 @@ import traceback
 # ==============================================================================
 #                         CONFIGURAÇÕES
 # ==============================================================================
-# Pega o token da Railway. Se estiver testando no PC, substitua os.getenv pelo seu token entre aspas.
 TOKEN = os.getenv("TOKEN")
 
-# Cores e Imagens (Baseado nos seus prints)
+# Cores e Imagens
 COR_EMBED = 0x2b2d31 
 COR_VERDE = 0x2ecc71 
 COR_CONFIRMADO = 0x2ecc71
@@ -21,42 +20,43 @@ BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940
 ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 IMAGEM_BONECA = "https://i.imgur.com/Xw0yYgH.png" 
 
-# Nome do Banco de Dados
 DATABASE_NAME = "ws_database_final.db"
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# Cache
+# Cache em Memória
 fila_mediadores = []
 
 # ==============================================================================
 #                         BANCO DE DADOS
 # ==============================================================================
 def init_db():
-    with sqlite3.connect(DATABASE_NAME) as con:
-        # Tabelas Essenciais
-        con.execute("CREATE TABLE IF NOT EXISTS pix (user_id INTEGER PRIMARY KEY, nome TEXT, chave TEXT, qrcode TEXT)")
-        con.execute("CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)")
-        con.execute("CREATE TABLE IF NOT EXISTS pix_saldo (user_id INTEGER PRIMARY KEY, saldo REAL DEFAULT 0.0)")
-        con.execute("CREATE TABLE IF NOT EXISTS counters (tipo TEXT PRIMARY KEY, contagem INTEGER DEFAULT 0)")
-        con.execute("CREATE TABLE IF NOT EXISTS restricoes (user_id INTEGER PRIMARY KEY, motivo TEXT)")
-        # Tabela de Perfil e Estatísticas
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS perfis (
-                user_id INTEGER PRIMARY KEY,
-                vitorias INTEGER DEFAULT 0,
-                derrotas INTEGER DEFAULT 0,
-                consecutivas INTEGER DEFAULT 0,
-                total_partidas INTEGER DEFAULT 0,
-                coins INTEGER DEFAULT 0
-            )
-        """)
+    try:
+        with sqlite3.connect(DATABASE_NAME) as con:
+            con.execute("CREATE TABLE IF NOT EXISTS pix (user_id INTEGER PRIMARY KEY, nome TEXT, chave TEXT, qrcode TEXT)")
+            con.execute("CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)")
+            con.execute("CREATE TABLE IF NOT EXISTS pix_saldo (user_id INTEGER PRIMARY KEY, saldo REAL DEFAULT 0.0)")
+            con.execute("CREATE TABLE IF NOT EXISTS counters (tipo TEXT PRIMARY KEY, contagem INTEGER DEFAULT 0)")
+            con.execute("CREATE TABLE IF NOT EXISTS restricoes (user_id INTEGER PRIMARY KEY, motivo TEXT)")
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS perfis (
+                    user_id INTEGER PRIMARY KEY,
+                    vitorias INTEGER DEFAULT 0,
+                    derrotas INTEGER DEFAULT 0,
+                    consecutivas INTEGER DEFAULT 0,
+                    total_partidas INTEGER DEFAULT 0,
+                    coins INTEGER DEFAULT 0
+                )
+            """)
+    except Exception as e:
+        print(f"Erro ao iniciar DB: {e}")
 
 def db_exec(query, params=()):
     try:
         with sqlite3.connect(DATABASE_NAME) as con:
-            con.execute(query, params); con.commit()
+            con.execute(query, params)
+            con.commit()
     except Exception as e:
         print(f"Erro DB Exec: {e}")
 
@@ -85,26 +85,13 @@ def db_increment_counter(tipo):
 def registrar_vitoria_db(user_id):
     with sqlite3.connect(DATABASE_NAME) as con:
         con.execute("INSERT OR IGNORE INTO perfis (user_id) VALUES (?)", (user_id,))
-        con.execute("""
-            UPDATE perfis 
-            SET vitorias = vitorias + 1,
-                consecutivas = consecutivas + 1,
-                total_partidas = total_partidas + 1,
-                coins = coins + 1
-            WHERE user_id = ?
-        """, (user_id,))
+        con.execute("UPDATE perfis SET vitorias=vitorias+1, consecutivas=consecutivas+1, total_partidas=total_partidas+1, coins=coins+1 WHERE user_id=?", (user_id,))
         con.commit()
 
 def registrar_derrota_db(user_id):
     with sqlite3.connect(DATABASE_NAME) as con:
         con.execute("INSERT OR IGNORE INTO perfis (user_id) VALUES (?)", (user_id,))
-        con.execute("""
-            UPDATE perfis 
-            SET derrotas = derrotas + 1,
-                consecutivas = 0,
-                total_partidas = total_partidas + 1
-            WHERE user_id = ?
-        """, (user_id,))
+        con.execute("UPDATE perfis SET derrotas=derrotas+1, consecutivas=0, total_partidas=total_partidas+1 WHERE user_id=?", (user_id,))
         con.commit()
 
 # ==============================================================================
@@ -114,7 +101,6 @@ def registrar_derrota_db(user_id):
 @bot.tree.command(name="perfil", description="Ver suas estatísticas e coins")
 @app_commands.describe(usuario="Ver perfil de outro usuário (opcional)")
 async def slash_perfil(interaction: discord.Interaction, usuario: discord.Member = None):
-    # Evita erro de pensamento
     await interaction.response.defer()
     
     alvo = usuario if usuario else interaction.user
@@ -157,7 +143,7 @@ async def slash_gg(interaction: discord.Interaction, vencedor: discord.Member, p
     await interaction.response.send_message(embed=e)
 
 # ==============================================================================
-#           VIEW: CONFIRMAÇÃO (LÓGICA DE NOMES E EMBED FOTO 2)
+#           VIEW: CONFIRMAÇÃO (Lógica da Partida)
 # ==============================================================================
 class ViewConfirmacao(View):
     def __init__(self, jogadores, med_id, valor, modo_completo):
@@ -172,9 +158,8 @@ class ViewConfirmacao(View):
     async def confirmar(self, it: discord.Interaction, btn: Button):
         if it.user.id not in [j['id'] for j in self.jogadores]: 
             return await it.response.send_message("Você não está nesta partida.", ephemeral=True)
-        
         if it.user.id in self.confirms: 
-            return await it.response.send_message("Você já confirmou.", ephemeral=True)
+            return await it.response.send_message("Já confirmado.", ephemeral=True)
         
         self.confirms.append(it.user.id)
         await it.channel.send(f"✅ **{it.user.mention}** confirmou a partida!")
@@ -182,7 +167,7 @@ class ViewConfirmacao(View):
         if len(self.confirms) >= len(self.jogadores):
             self.stop()
             
-            # --- 1. RENOMEAR O TÓPICO ---
+            # --- Renomeia o Tópico ---
             modo_upper = self.modo_completo.upper()
             prefixo = "Sala"
             tipo_db = "geral"
@@ -193,13 +178,12 @@ class ViewConfirmacao(View):
             elif "EMU" in modo_upper: prefixo, tipo_db = "Emu", "emu"
 
             num = db_increment_counter(tipo_db)
-            
-            try:
+            try: 
                 await it.channel.edit(name=f"{prefixo}-{num}")
-            except:
-                pass # Ignora erro de permissão ou rate limit
+            except: 
+                pass
             
-            # --- 2. EMBED FINAL (IGUAL FOTO 2) ---
+            # --- Embed Final ---
             try: estilo = f"{self.modo_completo.split('|')[0].strip()} Gel Normal"
             except: estilo = self.modo_completo
 
@@ -207,7 +191,6 @@ class ViewConfirmacao(View):
             e.set_thumbnail(url=IMAGEM_BONECA)
             e.add_field(name="🎮 Estilo de Jogo", value=estilo, inline=False)
             
-            # Taxa 10%
             try:
                 v_f = float(self.valor.replace("R$","").replace(",",".").strip())
                 taxa = max(v_f * 0.10, 0.10)
@@ -220,8 +203,6 @@ class ViewConfirmacao(View):
             
             mentions = f"<@{self.med_id}> " + " ".join([j['m'] for j in self.jogadores])
             await it.channel.send(content=mentions, embed=e)
-            
-            # Paga Mediador
             db_exec("UPDATE pix_saldo SET saldo = saldo + 0.10 WHERE user_id=?", (self.med_id,))
 
     @discord.ui.button(label="Recusar", style=discord.ButtonStyle.danger)
@@ -236,12 +217,12 @@ class ViewConfirmacao(View):
         await it.response.send_message(f"🏳️ {it.user.mention} sugeriu combinar regras.", ephemeral=False)
 
 # ==============================================================================
-#           VIEW: FILA (CRIA TÓPICO AGUARDANDO)
+#           VIEW: FILA (ENTRADA)
 # ==============================================================================
 class ViewFila(View):
     def __init__(self, modo_str, valor):
         super().__init__(timeout=None)
-        self.modo_str = modo_str 
+        self.modo_str = modo_str
         self.valor = valor
         self.jogadores = []
         self._btns()
@@ -253,20 +234,19 @@ class ViewFila(View):
             b2=Button(label="Gelo Infinito", style=discord.ButtonStyle.secondary)
             b1.callback=lambda i: self.join(i,"Gel Normal")
             b2.callback=lambda i: self.join(i,"Gel Infinito")
-            self.add_item(b1); self.add_item(b2)
+            self.add_item(b1)
+            self.add_item(b2)
         else:
             b=Button(label="/entrar na fila", style=discord.ButtonStyle.success)
             b.callback=lambda i: self.join(i,None)
             self.add_item(b)
-        
         bs=Button(label="Sair da Fila", style=discord.ButtonStyle.danger)
         bs.callback=self.leave
         self.add_item(bs)
 
     def emb(self):
-        # Título igual imagem
-        titulo_formatado = f"Aposta | {self.modo_str.replace('|', ' ')}"
-        e = discord.Embed(title=titulo_formatado, color=COR_EMBED)
+        t = f"Aposta | {self.modo_str.replace('|', ' ')}"
+        e = discord.Embed(title=t, color=COR_EMBED)
         e.set_author(name="WS APOSTAS", icon_url=ICONE_ORG)
         e.add_field(name="📋 Modalidade", value=f"**{self.modo_str.replace('|', ' ')}**", inline=True)
         e.add_field(name="💰 Valor", value=f"**R$ {self.valor}**", inline=True)
@@ -283,10 +263,9 @@ class ViewFila(View):
         await it.response.edit_message(embed=self.emb())
         
         lim = int(self.modo_str[0])*2 if self.modo_str[0].isdigit() else 2
-        
-        if len(self.jogadores) >= lim:
+        if len(self.jogadores)>=lim:
             if not fila_mediadores: 
-                return await it.channel.send("⚠️ **Sem mediadores na escala!**", delete_after=5)
+                return await it.channel.send("⚠️ Sem mediadores!", delete_after=5)
             
             med = fila_mediadores.pop(0)
             fila_mediadores.append(med)
@@ -295,10 +274,8 @@ class ViewFila(View):
             if not cid: return await it.channel.send("❌ Use /canal para configurar.")
             
             ch = bot.get_channel(int(cid))
-            # CRIA COM NOME PROVISÓRIO
             th = await ch.create_thread(name="aguardando-confirmacao", type=discord.ChannelType.public_thread)
             
-            # EMBED DE AGUARDANDO (IGUAL FOTO 1)
             ew = discord.Embed(title="Aguardando Confirmações", color=COR_VERDE)
             ew.set_thumbnail(url=IMAGEM_BONECA)
             ew.add_field(name="👑 Modo:", value=f"{self.modo_str.split('|')[0]} | {self.jogadores[0]['t'] or 'Padrão'}", inline=False)
@@ -307,7 +284,6 @@ class ViewFila(View):
             ew.add_field(name="\u200b", value="```✨ SEJAM MUITO BEM-VINDOS ✨\n\n• Regras adicionais podem ser combinadas.\n• Obrigatório print do acordo.```", inline=False)
             
             await th.send(content=" ".join([j['m'] for j in self.jogadores]), embed=ew, view=ViewConfirmacao(self.jogadores, med, self.valor, self.modo_str))
-            
             self.jogadores=[]
             await it.message.edit(embed=self.emb())
 
@@ -316,7 +292,7 @@ class ViewFila(View):
         await it.response.edit_message(embed=self.emb())
 
 # ==============================================================================
-#           PAINÉIS DE COMANDO (PIX COM QR CODE)
+#           PAINÉIS DE CONFIG E PIX
 # ==============================================================================
 
 class ViewPainelPix(View):
@@ -347,7 +323,7 @@ class ViewBotConfig(View):
     async def btn_filas(self, it, b): await it.response.send_message("Use o comando .fila para gerar", ephemeral=True)
 
 # ==============================================================================
-#           COMANDOS SLASH E PREFIXO
+#           COMANDOS SLASH (/pix, /botconfig, /canal)
 # ==============================================================================
 
 @bot.tree.command(name="pix", description="Painel Pix")
@@ -355,7 +331,6 @@ async def slash_pix(it: discord.Interaction):
     await it.response.defer(ephemeral=False)
     e=discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED)
     e.set_thumbnail(url=ICONE_ORG)
-    # DESCRIÇÃO CORRIGIDA (IMAGEM 1)
     e.description = ("Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
                      "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX.")
     await it.followup.send(embed=e, view=ViewPainelPix())
@@ -374,6 +349,10 @@ async def slash_canal(interaction: discord.Interaction, canal: discord.TextChann
     db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_th", str(canal.id)))
     await interaction.response.send_message(f"✅ Canal definido: {canal.mention}", ephemeral=True)
 
+# ==============================================================================
+#           COMANDOS PREFIXO (.mediar, .fila)
+# ==============================================================================
+
 @bot.command()
 async def mediar(ctx):
     if not ctx.author.guild_permissions.manage_messages: return
@@ -386,20 +365,35 @@ async def mediar(ctx):
             emb = discord.Embed(title="Painel da fila controladora", description=desc, color=COR_EMBED)
             emb.set_thumbnail(url=ICONE_ORG)
             return emb
+        
         @discord.ui.button(label="Entrar na fila", style=discord.ButtonStyle.success, emoji="🟢")
         async def entrar(self, it, b): 
-            if it.user.id not in fila_mediadores: fila_mediadores.append(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
+            if it.user.id not in fila_mediadores: fila_mediadores.append(it.user.id)
+            await it.response.edit_message(embed=self.gerar_embed())
+        
         @discord.ui.button(label="Sair da fila", style=discord.ButtonStyle.danger, emoji="🔴")
         async def sair(self, it, b): 
-            if it.user.id in fila_mediadores: fila_mediadores.remove(it.user.id); await it.response.edit_message(embed=self.gerar_embed())
+            if it.user.id in fila_mediadores: fila_mediadores.remove(it.user.id)
+            await it.response.edit_message(embed=self.gerar_embed())
+        
         @discord.ui.button(label="Remover Mediador", style=discord.ButtonStyle.secondary, emoji="⚙️")
         async def remover(self, it: discord.Interaction, b: Button):
             if not it.user.guild_permissions.manage_messages: return
-            view_rem = View(); select = UserSelect(placeholder="Selecione o mediador para remover")
+            view_rem = View()
+            select = UserSelect(placeholder="Selecione o mediador para remover")
+            
             async def cb_remover(interacao):
                 alvo = select.values[0]
                 if alvo.id in fila_mediadores:
                     fila_mediadores.remove(alvo.id)
                     await it.message.edit(embed=self.gerar_embed())
                     await interacao.response.send_message(f"✅ **{alvo.name}** removido.", ephemeral=True)
-                else: await interacao.response.send_message("❌ Usuário 
+                else: 
+                    await interacao.response.send_message("❌ Usuário não encontrado na fila.", ephemeral=True)
+            
+            select.callback = cb_remover
+            view_rem.add_item(select)
+            await it.response.send_message("Quem remover?", view=view_rem, ephemeral=True)
+            
+        @discord.ui.button(label="Painel Staff", style=discord.ButtonStyle.secondary, emoji="⚙️")
+        async def staff(self, it, b): await it.response.send
