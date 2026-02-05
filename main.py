@@ -36,6 +36,17 @@ def init_db():
         con.execute("CREATE TABLE IF NOT EXISTS pix_saldo (user_id INTEGER PRIMARY KEY, saldo REAL DEFAULT 0.0)")
         con.execute("CREATE TABLE IF NOT EXISTS counters (tipo TEXT PRIMARY KEY, contagem INTEGER DEFAULT 0)")
         con.execute("CREATE TABLE IF NOT EXISTS restricoes (user_id INTEGER PRIMARY KEY, motivo TEXT)")
+        # NOVA TABELA: PERFIS (Estatísticas e Coins)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS perfis (
+                user_id INTEGER PRIMARY KEY,
+                vitorias INTEGER DEFAULT 0,
+                derrotas INTEGER DEFAULT 0,
+                consecutivas INTEGER DEFAULT 0,
+                total_partidas INTEGER DEFAULT 0,
+                coins INTEGER DEFAULT 0
+            )
+        """)
 
 def db_exec(query, params=()):
     with sqlite3.connect("ws_database_final.db") as con:
@@ -59,7 +70,99 @@ def db_increment_counter(tipo):
         return res[0]
 
 # ==============================================================================
-#           VIEW: CONFIRMAÇÃO
+#           SISTEMA DE ESTATÍSTICAS (VITÓRIA/DERROTA)
+# ==============================================================================
+
+def registrar_vitoria_db(user_id):
+    """Adiciona 1 vitoria, 1 consecutiva, 1 total e 1 coin"""
+    with sqlite3.connect("ws_database_final.db") as con:
+        # Garante que o usuário existe
+        con.execute("INSERT OR IGNORE INTO perfis (user_id) VALUES (?)", (user_id,))
+        # Atualiza status
+        con.execute("""
+            UPDATE perfis 
+            SET vitorias = vitorias + 1,
+                consecutivas = consecutivas + 1,
+                total_partidas = total_partidas + 1,
+                coins = coins + 1
+            WHERE user_id = ?
+        """, (user_id,))
+        con.commit()
+
+def registrar_derrota_db(user_id):
+    """Adiciona 1 derrota, ZERA consecutiva, 1 total"""
+    with sqlite3.connect("ws_database_final.db") as con:
+        con.execute("INSERT OR IGNORE INTO perfis (user_id) VALUES (?)", (user_id,))
+        con.execute("""
+            UPDATE perfis 
+            SET derrotas = derrotas + 1,
+                consecutivas = 0,
+                total_partidas = total_partidas + 1
+            WHERE user_id = ?
+        """, (user_id,))
+        con.commit()
+
+# ==============================================================================
+#           COMANDOS SLASH: PERFIL E RESULTADO
+# ==============================================================================
+
+@bot.tree.command(name="perfil", description="Ver suas estatísticas e coins")
+@app_commands.describe(usuario="Ver perfil de outro usuário (opcional)")
+async def slash_perfil(interaction: discord.Interaction, usuario: discord.Member = None):
+    # Se não marcar ninguém, mostra o próprio perfil
+    alvo = usuario if usuario else interaction.user
+    
+    # Busca dados no banco
+    dados = db_query("SELECT vitorias, derrotas, consecutivas, total_partidas, coins FROM perfis WHERE user_id=?", (alvo.id,))
+    
+    # Se não tiver registro, tudo zero
+    if not dados:
+        v, d, c, t, coins = 0, 0, 0, 0, 0
+    else:
+        v, d, c, t, coins = dados
+
+    # Criação do Embed igual à Imagem
+    embed = discord.Embed(color=COR_VERDE)
+    embed.set_author(name=alvo.name, icon_url=alvo.display_avatar.url)
+    
+    # Bloco Estatísticas
+    texto_stats = (
+        f"Vitórias: {v}\n"
+        f"Derrotas: {d}\n"
+        f"Consecutivas: {c}\n"
+        f"Total de Partidas: {t}"
+    )
+    embed.add_field(name="🎮 Estatísticas", value=texto_stats, inline=False)
+    
+    # Bloco Coins
+    embed.add_field(name="💎 Coins", value=f"| Coins: {coins}", inline=False)
+    
+    # Thumbnail (Foto do perfil no canto direito)
+    embed.set_thumbnail(url=alvo.display_avatar.url)
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="gg", description="Registrar resultado da partida (Apenas Staff)")
+@app_commands.describe(vencedor="Quem ganhou", perdedor="Quem perdeu")
+async def slash_gg(interaction: discord.Interaction, vencedor: discord.Member, perdedor: discord.Member):
+    # Permissão (apenas quem tem gerenciar mensagens ou cargo config)
+    if not interaction.user.guild_permissions.manage_messages:
+        return await interaction.response.send_message("❌ Apenas mediadores/staff.", ephemeral=True)
+
+    # Executa a lógica
+    registrar_vitoria_db(vencedor.id)
+    registrar_derrota_db(perdedor.id)
+
+    # Feedback Visual
+    e = discord.Embed(title="✅ Resultado Registrado", color=COR_VERDE)
+    e.description = (
+        f"🏆 **Vencedor:** {vencedor.mention} (+1 Win, +1 Coin, Streak UP)\n"
+        f"💀 **Perdedor:** {perdedor.mention} (+1 Loss, Streak Zerado)"
+    )
+    await interaction.response.send_message(embed=e)
+
+# ==============================================================================
+#           VIEW: CONFIRMAÇÃO (MANTIDA)
 # ==============================================================================
 class ViewConfirmacao(View):
     def __init__(self, jogadores, med_id, valor, modo_completo):
@@ -84,7 +187,6 @@ class ViewConfirmacao(View):
         if len(self.confirms) >= len(self.jogadores):
             self.stop()
             
-            # Renomear Tópico
             modo_upper = self.modo_completo.upper()
             prefixo = "Sala"
             tipo_db = "geral"
@@ -98,7 +200,6 @@ class ViewConfirmacao(View):
             try: await it.channel.edit(name=f"{prefixo}-{num}")
             except: pass
             
-            # Embed Final
             try: estilo = f"{self.modo_completo.split('|')[0].strip()} Gel Normal"
             except: estilo = self.modo_completo
 
@@ -164,10 +265,8 @@ class ViewFila(View):
         if len(self.jogadores)>=lim:
             if not fila_mediadores: return await it.channel.send("⚠️ Sem mediadores!", delete_after=5)
             med = fila_mediadores.pop(0); fila_mediadores.append(med)
-            
             cid = db_get_config("canal_th")
             if not cid: return await it.channel.send("❌ Use /canal para configurar.")
-            
             ch = bot.get_channel(int(cid)); th = await ch.create_thread(name="aguardando-confirmacao", type=discord.ChannelType.public_thread)
             
             ew = discord.Embed(title="Aguardando Confirmações", color=COR_VERDE); ew.set_thumbnail(url=IMAGEM_BONECA)
@@ -183,7 +282,7 @@ class ViewFila(View):
         self.jogadores=[j for j in self.jogadores if j['id']!=it.user.id]; await it.response.edit_message(embed=self.emb())
 
 # ==============================================================================
-#           PAINÉIS
+#           PAINÉIS DE COMANDO (PIX, BOTCONFIG)
 # ==============================================================================
 
 class ViewPainelPix(View):
@@ -214,14 +313,13 @@ class ViewBotConfig(View):
     async def btn_filas(self, it, b): await it.response.send_message("Use o comando .fila para gerar", ephemeral=True)
 
 # ==============================================================================
-#           COMANDOS
+#           COMANDOS PRINCIPAIS
 # ==============================================================================
 
 @bot.tree.command(name="pix", description="Painel Pix")
 async def slash_pix(it: discord.Interaction):
     await it.response.defer(ephemeral=False)
-    e=discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED)
-    e.set_thumbnail(url=ICONE_ORG)
+    e=discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED); e.set_thumbnail(url=ICONE_ORG)
     e.description = ("Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
                      "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX.")
     await it.followup.send(embed=e, view=ViewPainelPix())
@@ -235,6 +333,7 @@ async def slash_botconfig(it: discord.Interaction):
     await it.followup.send(embed=e, view=ViewBotConfig())
 
 @bot.tree.command(name="canal", description="Definir canal onde os tópicos serão criados")
+@app_commands.describe(canal="O canal de texto alvo")
 async def slash_canal(interaction: discord.Interaction, canal: discord.TextChannel):
     if not interaction.user.guild_permissions.administrator: return
     db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_th", str(canal.id)))
@@ -249,8 +348,7 @@ async def mediar(ctx):
             if not fila_mediadores: desc += "*A lista está vazia.*"
             else:
                 for i, uid in enumerate(fila_mediadores): desc += f"**{i+1} •** <@{uid}> {uid}\n"
-            emb = discord.Embed(title="Painel da fila controladora", description=desc, color=COR_EMBED)
-            emb.set_thumbnail(url=ICONE_ORG)
+            emb = discord.Embed(title="Painel da fila controladora", description=desc, color=COR_EMBED); emb.set_thumbnail(url=ICONE_ORG)
             return emb
         @discord.ui.button(label="Entrar na fila", style=discord.ButtonStyle.success, emoji="🟢")
         async def entrar(self, it, b): 
@@ -266,58 +364,9 @@ async def mediar(ctx):
                 alvo = select.values[0]
                 if alvo.id in fila_mediadores:
                     fila_mediadores.remove(alvo.id)
-                    await it.message.edit(embed=self.gerar_embed())
-                    await interacao.response.send_message(f"✅ **{alvo.name}** removido.", ephemeral=True)
+                    await it.message.edit(embed=self.gerar_embed()); await interacao.response.send_message(f"✅ **{alvo.name}** removido.", ephemeral=True)
                 else: await interacao.response.send_message("❌ Usuário não encontrado na fila.", ephemeral=True)
             select.callback = cb_remover; view_rem.add_item(select); await it.response.send_message("Quem remover?", view=view_rem, ephemeral=True)
         @discord.ui.button(label="Painel Staff", style=discord.ButtonStyle.secondary, emoji="⚙️")
         async def staff(self, it, b): await it.response.send_message("Log Staff", ephemeral=True)
-    v = ViewMediar(); await ctx.send(embed=v.gerar_embed(), view=v)
-
-@bot.command()
-async def fila(ctx):
-    if not ctx.author.guild_permissions.administrator: return
-    
-    class ModalFila(Modal, title="Gerar Filas"):
-        m = TextInput(label="Modo", default="1v1")
-        p = TextInput(label="Plataforma", default="Mobile")
-        # INSTRUÇÃO CLARA: SEPARAR POR ESPAÇO
-        v = TextInput(label="Valores (Separe por ESPAÇO)", 
-                      default="100,00 50,00 20,00 10,00 5,00",
-                      style=discord.TextStyle.paragraph)
-
-        async def on_submit(self, i):
-            await i.response.send_message("Gerando filas...", ephemeral=True)
-            
-            # AGORA SEPARA POR ESPAÇO (split vazio separa por qualquer espaço em branco)
-            # Isso permite "100,00 50,00" sem quebrar a vírgula
-            raw_vals = self.v.value.split() 
-            
-            vals = []
-            for val in raw_vals:
-                val = val.strip()
-                # Adiciona ,00 se o usuário digitou só "100"
-                if ',' not in val: val += ",00"
-                vals.append(val)
-
-            if len(vals) > 15: vals = vals[:15]
-            
-            modo_formatado = f"{self.m.value}|{self.p.value}" 
-            
-            for val in vals:
-                vi = ViewFila(modo_formatado, val)
-                await i.channel.send(embed=vi.emb(), view=vi)
-                await asyncio.sleep(0.5)
-                
-    class V(View):
-        @discord.ui.button(label="Gerar", style=discord.ButtonStyle.danger)
-        async def g(self, i, b): await i.response.send_modal(ModalFila())
-    
-    await ctx.send("Painel Admin", view=V())
-
-@bot.event
-async def on_ready():
-    init_db(); await bot.tree.sync(); print("ONLINE - VÍRGULAS CORRIGIDAS")
-
-if TOKEN: bot.run(TOKEN)
-    
+    v = ViewMediar(); await ctx.send(embed=v.gerar_
