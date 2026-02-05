@@ -108,7 +108,6 @@ class ViewConfirmacao(View):
             e.set_thumbnail(url=IMAGEM_BONECA)
             e.add_field(name="🎮 Estilo de Jogo", value=estilo, inline=False)
             
-            # Taxa 10%
             try:
                 v_f = float(self.valor.replace("R$","").replace(",",".").strip())
                 taxa = max(v_f * 0.10, 0.10)
@@ -149,18 +148,25 @@ class ViewFila(View):
             b=Button(label="/entrar na fila", style=discord.ButtonStyle.success); b.callback=lambda i: self.join(i,None); self.add_item(b)
         bs=Button(label="Sair da Fila", style=discord.ButtonStyle.danger); bs.callback=self.leave; self.add_item(bs)
 
-    def emb(self):
-        e = discord.Embed(title=f"Sessão de Aposta | {self.modo_str}", color=COR_EMBED)
+    def embed_painel(self):
+        # MUDANÇA 1: Título formatado exatamente como pedido: "Aposta | 1v1 Mobile"
+        # Substitui o separador interno "|" por espaço para ficar bonito no título
+        titulo_formatado = f"Aposta | {self.modo_str.replace('|', ' ')}"
+        
+        e = discord.Embed(title=titulo_formatado, color=COR_EMBED)
         e.set_author(name="WS APOSTAS", icon_url=ICONE_ORG)
-        e.add_field(name="📋 Modalidade", value=f"**{self.modo_str}**", inline=True)
+        
+        # O campo modalidade mantemos técnico para clareza
+        e.add_field(name="📋 Modalidade", value=f"**{self.modo_str.replace('|', ' ')}**", inline=True)
         e.add_field(name="💰 Valor", value=f"**R$ {self.valor}**", inline=True)
+        
         lst = [f"👤 {j['m']} - {j['t']}" if j['t'] else f"👤 {j['m']}" for j in self.jogadores]
         e.add_field(name="👥 Jogadores", value="\n".join(lst) or "*Aguardando...*", inline=False)
         e.set_image(url=BANNER_URL); return e
 
     async def join(self, it, tipo):
         if any(j['id']==it.user.id for j in self.jogadores): return await it.response.send_message("Já está na fila.", ephemeral=True)
-        self.jogadores.append({'id':it.user.id,'m':it.user.mention,'t':tipo}); await it.response.edit_message(embed=self.emb())
+        self.jogadores.append({'id':it.user.id,'m':it.user.mention,'t':tipo}); await it.response.edit_message(embed=self.embed_painel())
         
         lim = int(self.modo_str[0])*2 if self.modo_str[0].isdigit() else 2
         if len(self.jogadores)>=lim:
@@ -179,10 +185,10 @@ class ViewFila(View):
             ew.add_field(name="\u200b", value="```✨ SEJAM MUITO BEM-VINDOS ✨\n\n• Regras adicionais podem ser combinadas.\n• Obrigatório print do acordo.```", inline=False)
             
             await th.send(content=" ".join([j['m'] for j in self.jogadores]), embed=ew, view=ViewConfirmacao(self.jogadores, med, self.valor, self.modo_str))
-            self.jogadores=[]; await it.message.edit(embed=self.emb())
+            self.jogadores=[]; await it.message.edit(embed=self.embed_painel())
 
     async def leave(self, it):
-        self.jogadores=[j for j in self.jogadores if j['id']!=it.user.id]; await it.response.edit_message(embed=self.emb())
+        self.jogadores=[j for j in self.jogadores if j['id']!=it.user.id]; await it.response.edit_message(embed=self.embed_painel())
 
 # ==============================================================================
 #           COMANDOS SLASH (NOVO /canal e /pix)
@@ -220,13 +226,18 @@ class ViewBotConfig(View):
 async def slash_canal(interaction: discord.Interaction, canal: discord.TextChannel):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("Apenas administradores.", ephemeral=True)
-    
     db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_th", str(canal.id)))
     await interaction.response.send_message(f"✅ Canal de tópicos definido para: {canal.mention}", ephemeral=True)
 
 @bot.tree.command(name="pix", description="Painel Pix")
 async def slash_pix(it: discord.Interaction):
-    await it.response.defer(ephemeral=False); e=discord.Embed(title="Painel Pix", color=COR_EMBED); e.set_thumbnail(url=ICONE_ORG); await it.followup.send(embed=e, view=ViewPainelPix())
+    await it.response.defer(ephemeral=False)
+    e=discord.Embed(title="Painel Para Configurar Chave PIX", color=COR_EMBED)
+    e.set_thumbnail(url=ICONE_ORG)
+    # MUDANÇA 2: Descrição atualizada conforme a Imagem 1 enviada
+    e.description = ("Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\n"
+                     "Selecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX.")
+    await it.followup.send(embed=e, view=ViewPainelPix())
 
 @bot.tree.command(name="botconfig", description="Painel Config")
 async def slash_botconfig(it: discord.Interaction):
@@ -259,7 +270,6 @@ async def fila(ctx):
     class ModalFila(Modal, title="Gerar Filas Personalizadas"):
         m = TextInput(label="Modo (Ex: 1v1)", default="1v1")
         p = TextInput(label="Plataforma (Ex: Mobile)", default="Mobile")
-        # NOVO CAMPO: VALORES PERSONALIZADOS
         v = TextInput(label="Valores (Max 15, separe por vírgula)", 
                       default="100,00, 50,00, 20,00, 10,00, 5,00",
                       style=discord.TextStyle.paragraph)
@@ -267,9 +277,7 @@ async def fila(ctx):
         async def on_submit(self, i):
             await i.response.send_message("Gerando filas...", ephemeral=True)
             
-            # Processa a string de valores
             raw_vals = self.v.value.split(',')
-            # Limpa espaços e pega no máximo 15
             vals = [val.strip() for val in raw_vals if val.strip()]
             if len(vals) > 15: vals = vals[:15]
             
@@ -277,8 +285,8 @@ async def fila(ctx):
             
             for val in vals:
                 vi = ViewFila(modo_formatado, val)
+                # MUDANÇA 3: Geração Imediata (Sem asyncio.sleep)
                 await i.channel.send(embed=vi.embed_painel(), view=vi)
-                await asyncio.sleep(1) # Delay anti-spam
                 
     class V(View):
         @discord.ui.button(label="Gerar", style=discord.ButtonStyle.danger)
@@ -288,7 +296,7 @@ async def fila(ctx):
 
 @bot.event
 async def on_ready():
-    init_db(); await bot.tree.sync(); print("ONLINE - V.FINAL COM /CANAL E FILAS PERSONALIZADAS")
+    init_db(); await bot.tree.sync(); print("ONLINE - V.FINAL COM TÍTULO E GERAÇÃO RÁPIDA")
 
 if TOKEN: bot.run(TOKEN)
-            
+        
