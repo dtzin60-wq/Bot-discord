@@ -20,7 +20,7 @@ COR_EMBED = 0x2b2d31
 COR_VERDE = 0x2ecc71 
 COR_CONFIRMADO = 0x2ecc71
 
-# ✅ BANNER CONFIGURADO (Aparecerá grande embaixo da fila)
+# ✅ BANNER CONFIGURADO (Aparecerá grande embaixo da fila igual na foto)
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465929927764349102/1469174968255250463/Screenshot_2026-01-30-13-32-38-096_com.openai.chatgpt-edit.jpg?ex=6986b350&is=698561d0&hm=f4c6320b39ae922df6f9d0874c031bdb1ebde7d89af2f9418abe0d1a89a86854&"
 
 ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
@@ -122,7 +122,7 @@ class ViewConfirmacao(View):
             e.add_field(name="💎 Valor da Aposta", value=f"R$ {self.valor}", inline=False)
             e.add_field(name="👥 Jogadores", value="\n".join([j['m'] for j in self.jogadores]), inline=False)
             
-            # Banner também na confirmação para ficar bonito
+            # Também coloca o banner na confirmação pra ficar bonito
             e.set_image(url=BANNER_URL)
             
             await it.channel.send(content=f"<@{self.med_id}> {' '.join([j['m'] for j in self.jogadores])}", embed=e)
@@ -164,7 +164,7 @@ class ViewFila(View):
         lst = [f"👤 {j['m']} - {j['t']}" if j['t'] else f"👤 {j['m']}" for j in self.jogadores]
         e.add_field(name="👥 Jogadores", value="\n".join(lst) or "*Aguardando...*", inline=False)
         
-        # 🔥 AQUI ESTÁ O COMANDO QUE FAZ A FOTO APARECER
+        # 🔥 AQUI ESTÁ O COMANDO QUE FAZ A FOTO APARECER GRANDE EMBAIXO
         e.set_image(url=BANNER_URL) 
         
         return e
@@ -345,4 +345,3 @@ async def on_ready():
             await guild.leave()
 
 if TOKEN: bot.run(TOKEN)
-                
