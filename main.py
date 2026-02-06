@@ -1,4 +1,4 @@
-Import discord
+import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput, UserSelect, ChannelSelect, RoleSelect
@@ -12,9 +12,9 @@ import traceback
 # ==============================================================================
 TOKEN = os.getenv("TOKEN")
 
-# 🔒 COLOQUE AQUI O ID DO SEU SERVIDOR (1465929927206375527)
-# Para pegar o ID: Ative o modo desenvolvedor no Discord, clique com botão direito no nome do servidor > Copiar ID
-ID_SERVIDOR_PERMITIDO = 123456789012345678  # <--- TROQUE ISSO PELO ID DO SEU SERVIDOR
+# 🔒 ID DO SERVIDOR OFICIAL (WS APOSTAS)
+# O bot só funcionará neste servidor. Se estiver em outro, ele sairá automaticamente.
+ID_SERVIDOR_PERMITIDO = 1465929927206375527 
 
 # Cores e Imagens
 COR_EMBED = 0x2b2d31 
@@ -330,7 +330,7 @@ async def on_guild_join(guild):
 async def on_ready():
     init_db()
     await bot.tree.sync()
-    print("ONLINE - MONITORAMENTO DE SERVIDOR ATIVO")
+    print(f"ONLINE - PROTEGIDO PARA O SERVIDOR ID: {ID_SERVIDOR_PERMITIDO}")
     
     # 2. VARREDURA INICIAL: Se o bot já estiver em servidores errados, ele sai agora.
     for guild in bot.guilds:
@@ -339,3 +339,4 @@ async def on_ready():
             await guild.leave()
 
 if TOKEN: bot.run(TOKEN)
+            
