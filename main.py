@@ -340,4 +340,4 @@ async def on_ready():
             await guild.leave()
 
 if TOKEN: bot.run(TOKEN)
-    
+            
