@@ -1,34 +1,37 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from discord.ui import View, Button, Modal, TextInput, UserSelect, ChannelSelect, RoleSelect
+from discord.ui import View, Button, Modal, TextInput, ChannelSelect
 import sqlite3
 import os
 import asyncio
+import random
+import aiohttp # Para baixar emojis se necessário
+from datetime import datetime
 
 # ==============================================================================
 #                         CONFIGURAÇÕES
 # ==============================================================================
-TOKEN = os.getenv("TOKEN")
-ID_SERVIDOR_PERMITIDO = 1465929927206375527 
+TOKEN = os.getenv("TOKEN") 
 
-# Cores
+# CORES
 COR_EMBED = 0x2b2d31 
 COR_VERDE = 0x2ecc71 
 COR_CONFIRMADO = 0x2ecc71
+COR_ERRO = 0xff0000
+COR_BLACKLIST = 0x000000
 
-# ⚠️ SE O BANNER NÃO APARECER, O LINK EXPIROU. USE UM LINK DO IMGUR.COM
-BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
-ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
+# IMAGENS
+BANNER_URL = "https://i.imgur.com/Xw0yYgH.png" 
+ICONE_ORG = "https://i.imgur.com/Xw0yYgH.png"
 IMAGEM_BONECA = "https://i.imgur.com/Xw0yYgH.png" 
 
 intents = discord.Intents.all()
-intents.message_content = True 
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
 # Cache
-partidas_andamento = {} 
-fila_mediadores = []    
+fila_mediadores = []
+partidas_ativas = {} 
 
 # ==============================================================================
 #                         BANCO DE DADOS
@@ -39,18 +42,24 @@ def init_db():
         con.execute("CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)")
         con.execute("CREATE TABLE IF NOT EXISTS pix_saldo (user_id INTEGER PRIMARY KEY, saldo REAL DEFAULT 0.0)")
         con.execute("CREATE TABLE IF NOT EXISTS counters (tipo TEXT PRIMARY KEY, contagem INTEGER DEFAULT 0)")
+        con.execute("CREATE TABLE IF NOT EXISTS stats (user_id INTEGER PRIMARY KEY, vitorias INTEGER DEFAULT 0, derrotas INTEGER DEFAULT 0)")
+        con.execute("CREATE TABLE IF NOT EXISTS blacklist (user_id INTEGER PRIMARY KEY, motivo TEXT)")
 
 def db_exec(query, params=()):
-    with sqlite3.connect("ws_database_final.db") as con:
-        con.execute(query, params); con.commit()
+    try:
+        with sqlite3.connect("ws_database_final.db") as con:
+            con.execute(query, params); con.commit()
+    except: pass
 
 def db_query(query, params=()):
-    with sqlite3.connect("ws_database_final.db") as con:
-        return con.execute(query, params).fetchone()
+    try:
+        with sqlite3.connect("ws_database_final.db") as con:
+            return con.execute(query, params).fetchone()
+    except: return None
 
-def db_get_config(chave, default=None):
+def db_get_config(chave):
     res = db_query("SELECT valor FROM config WHERE chave=?", (chave,))
-    return res[0] if res else default
+    return res[0] if res else None
 
 def db_increment_counter(tipo):
     with sqlite3.connect("ws_database_final.db") as con:
@@ -61,97 +70,89 @@ def db_increment_counter(tipo):
         res = cur.execute("SELECT contagem FROM counters WHERE tipo = ?", (tipo,)).fetchone()
         return res[0]
 
-# ==============================================================================
-#           VIEW: FINAL (BOTÃO CINZA)
-# ==============================================================================
-class ViewCredenciais(View):
-    def __init__(self, sala_id):
-        super().__init__(timeout=None)
-        self.sala_id = sala_id
-
-    # BOTÃO CINZA (Secondary) "Copiar id"
-    @discord.ui.button(label="Copiar id", style=discord.ButtonStyle.secondary, emoji="📋")
-    async def copiar_id(self, it: discord.Interaction, btn: Button):
-        await it.response.send_message(f"{self.sala_id}", ephemeral=True)
+def is_blacklisted(user_id):
+    return db_query("SELECT user_id FROM blacklist WHERE user_id=?", (user_id,)) is not None
 
 # ==============================================================================
-#           VIEW: CONFIRMAÇÃO (DENTRO DO TÓPICO)
+#           VIEWS E LÓGICA
 # ==============================================================================
+
+class ViewConfigCanais(View):
+    def __init__(self): super().__init__(timeout=None)
+
+    @discord.ui.select(cls=ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="Canal Aleatório 1", min_values=1, max_values=1, row=0)
+    async def s1(self, it, select):
+        db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_1", str(select.values[0].id)))
+        await it.response.send_message(f"✅ Canal 1 Salvo: {select.values[0].mention}", ephemeral=True)
+
+    @discord.ui.select(cls=ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="Canal Aleatório 2", min_values=1, max_values=1, row=1)
+    async def s2(self, it, select):
+        db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_2", str(select.values[0].id)))
+        await it.response.send_message(f"✅ Canal 2 Salvo: {select.values[0].mention}", ephemeral=True)
+
+    @discord.ui.select(cls=ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="Canal Aleatório 3", min_values=1, max_values=1, row=2)
+    async def s3(self, it, select):
+        db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_3", str(select.values[0].id)))
+        await it.response.send_message(f"✅ Canal 3 Salvo: {select.values[0].mention}", ephemeral=True)
+
+class ViewPainelPix(View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="Cadastrar Pix", style=discord.ButtonStyle.success, emoji="💠")
+    async def cad(self, it, b):
+        m=Modal(title="Cadastrar Pix"); n=TextInput(label="Nome"); c=TextInput(label="Chave"); q=TextInput(label="QR Code (Opcional)", required=False)
+        m.add_item(n); m.add_item(c); m.add_item(q)
+        async def sub(i): db_exec("INSERT OR REPLACE INTO pix VALUES (?,?,?,?)", (i.user.id, n.value, c.value, q.value)); await i.response.send_message("✅ Salvo.", ephemeral=True)
+        m.on_submit=sub; await it.response.send_modal(m)
+    @discord.ui.button(label="Ver Minha Chave", style=discord.ButtonStyle.primary, emoji="🔍")
+    async def ver(self, it, b):
+        d=db_query("SELECT * FROM pix WHERE user_id=?",(it.user.id,))
+        await it.response.send_message(f"**Seus Dados:**\nNome: {d[1]}\nChave: `{d[2]}`" if d else "Sem dados.", ephemeral=True)
+
+class ViewCopiarID(View):
+    def __init__(self, id_sala): super().__init__(timeout=None); self.id_sala = id_sala
+    @discord.ui.button(label="Copiar ID", style=discord.ButtonStyle.secondary, emoji="📋")
+    async def copiar(self, it, b): await it.response.send_message(f"{self.id_sala}", ephemeral=True)
+
 class ViewConfirmacao(View):
     def __init__(self, jogadores, med_id, valor, modo_completo):
         super().__init__(timeout=None)
-        self.jogadores = jogadores
-        self.med_id = med_id
-        self.valor = valor
-        self.modo_completo = modo_completo
+        self.jogadores = jogadores; self.med_id = med_id; self.valor = valor; self.modo_completo = modo_completo
         self.confirms = []
 
-    @discord.ui.button(label="Confirmar Presença", style=discord.ButtonStyle.success, emoji="✅")
+    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success)
     async def confirmar(self, it: discord.Interaction, btn: Button):
-        if it.user.id not in [j['id'] for j in self.jogadores]: 
-            return await it.response.send_message("❌ Você não está na lista.", ephemeral=True)
-        
-        if it.user.id in self.confirms: 
-            return await it.response.send_message("⚠️ Já confirmado.", ephemeral=True)
+        await it.response.defer()
+        if it.user.id not in [j['id'] for j in self.jogadores]: return await it.followup.send("Você não está nesta partida.", ephemeral=True)
+        if it.user.id in self.confirms: return await it.followup.send("Você já confirmou.", ephemeral=True)
         
         self.confirms.append(it.user.id)
-        # Feedback rápido sem spammar o chat principal
-        await it.response.send_message(f"✅ Presença confirmada!", ephemeral=True)
-
         if len(self.confirms) >= len(self.jogadores):
             self.stop()
-            
-            # 🔥 LIMPEZA 1: Apaga a mensagem de boas-vindas/botões para limpar a tela
-            try: await it.message.delete()
-            except: pass
-
-            # Renomear Canal
-            modo_upper = self.modo_completo.upper()
-            prefixo = "Sala"
-            tipo_db = "geral"
-            if "MOBILE" in modo_upper: prefixo, tipo_db = "Mobile", "mobile"
-            elif "MISTO" in modo_upper: prefixo, tipo_db = "Misto", "misto"
-            elif "FULL" in modo_upper: prefixo, tipo_db = "Full", "full"
-            elif "EMU" in modo_upper: prefixo, tipo_db = "Emu", "emu"
-
-            num = db_increment_counter(tipo_db)
-            try: await it.channel.edit(name=f"{prefixo}-{num}")
+            num = db_increment_counter("geral")
+            try: await it.channel.edit(name=f"Sala-{num}")
             except: pass
             
-            # Embed de Instruções ao Mediador
-            e = discord.Embed(title="Aguardando Credenciais", color=COR_CONFIRMADO)
-            e.description = (
-                f"Prezado Mediador <@{self.med_id}>,\n\n"
-                f"Todos confirmaram. Por favor proceda:\n"
-                f"1️⃣ Envie o **ID** da sala (Aguarde o ✅).\n"
-                f"2️⃣ Envie a **SENHA**."
-            )
-            e.set_image(url=BANNER_URL)
+            partidas_ativas[it.channel.id] = {"modo": self.modo_completo, "jogadores": [j['m'] for j in self.jogadores], "mediador": self.med_id}
             
-            # Envia e SALVA a mensagem de instrução para apagar depois
-            msg_instrucao = await it.channel.send(content=f"<@{self.med_id}>", embed=e)
-            
-            # Salva no cache com o ID da mensagem de instrução
-            partidas_andamento[it.channel.id] = {
-                "mediador": self.med_id,
-                "valor": self.valor,
-                "step": 0,
-                "room_id": None,
-                "modo_str": self.modo_completo,
-                "jogadores_str": "\n".join([j['m'] for j in self.jogadores]),
-                "msg_instrucao_id": msg_instrucao.id 
-            }
-            
-            db_exec("UPDATE pix_saldo SET saldo = saldo + 0.10 WHERE user_id=?", (self.med_id,))
+            d = db_query("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (self.med_id,))
+            msg_pix = f"\n\n**💠 PAGAMENTO**\nNome: {d[0]}\nChave: `{d[1]}`" if d else "\n\n⚠️ Mediador sem PIX."
 
-    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.danger)
-    async def recusar(self, it: discord.Interaction, btn: Button):
-        if it.user.id in [j['id'] for j in self.jogadores]:
-            await it.channel.send("🚫 Cancelado."); await asyncio.sleep(2); await it.channel.delete()
+            try: await it.channel.purge(limit=20)
+            except: pass
 
-# ==============================================================================
-#           VIEW: FILA
-# ==============================================================================
+            e = discord.Embed(title="Partida Confirmada", color=COR_CONFIRMADO)
+            e.set_thumbnail(url=IMAGEM_BONECA); e.set_image(url=BANNER_URL)
+            e.add_field(name="🎮 Modo", value=self.modo_completo, inline=False)
+            e.add_field(name="ℹ️ Info", value=f"Mediador: <@{self.med_id}>{msg_pix}", inline=False)
+            e.add_field(name="💎 Valor", value=f"R$ {self.valor}", inline=False)
+            e.add_field(name="👥 Jogadores", value="\n".join([j['m'] for j in self.jogadores]), inline=False)
+            e.set_footer(text="Aguardando ID e Senha...")
+            
+            await it.channel.send(content=f"<@{self.med_id}> {' '.join([j['m'] for j in self.jogadores])}", embed=e)
+
+    @discord.ui.button(label="Recusar", style=discord.ButtonStyle.danger)
+    async def recusar(self, it, btn): await it.channel.delete()
+
 class ViewFila(View):
     def __init__(self, modo_str, valor):
         super().__init__(timeout=None); self.modo_str=modo_str; self.valor=valor; self.jogadores=[]
@@ -159,167 +160,199 @@ class ViewFila(View):
 
     def _btns(self):
         self.clear_items()
-        if "1V1" in self.modo_str.upper():
-            b1=Button(label="Gelo Normal", style=discord.ButtonStyle.secondary); b2=Button(label="Gelo Infinito", style=discord.ButtonStyle.secondary)
-            b1.callback=lambda i: self.join(i,"Gel Normal"); b2.callback=lambda i: self.join(i,"Gel Infinito")
-            self.add_item(b1); self.add_item(b2)
-        else:
-            b=Button(label="Entrar na Fila", style=discord.ButtonStyle.success); b.callback=lambda i: self.join(i,None); self.add_item(b)
-        bs=Button(label="Sair", style=discord.ButtonStyle.danger); bs.callback=self.leave; self.add_item(bs)
+        b=Button(label="/entrar na fila", style=discord.ButtonStyle.success); b.callback=lambda i: self.join(i); self.add_item(b)
+        bs=Button(label="Sair da Fila", style=discord.ButtonStyle.danger); bs.callback=self.leave; self.add_item(bs)
 
     def emb(self):
-        titulo = f"Aposta | {self.modo_str.replace('|', ' ')}"
-        e = discord.Embed(title=titulo, color=COR_EMBED)
-        e.set_author(name="WS APOSTAS", icon_url=ICONE_ORG)
-        e.add_field(name="📋 Modalidade", value=f"**{self.modo_str.replace('|', ' ')}**", inline=True)
+        e = discord.Embed(title=f"Aposta | {self.modo_str}", color=COR_EMBED)
+        e.set_author(name="SPACE APOSTAS", icon_url=ICONE_ORG)
         e.add_field(name="💰 Valor", value=f"**R$ {self.valor}**", inline=True)
-        lista = "\n".join([f"👤 {j['m']}" for j in self.jogadores])
-        if not lista: lista = "*Aguardando...*"
-        e.add_field(name="👥 Jogadores na Fila", value=lista, inline=False)
+        e.add_field(name="👥 Jogadores", value="\n".join([j['m'] for j in self.jogadores]) or "*Aguardando...*", inline=False)
         e.set_image(url=BANNER_URL)
         return e
 
-    async def join(self, it, tipo):
-        if any(j['id']==it.user.id for j in self.jogadores): return await it.response.send_message("Já está na fila.", ephemeral=True)
-        self.jogadores.append({'id':it.user.id,'m':it.user.mention,'t':tipo}); await it.response.edit_message(embed=self.emb())
+    async def join(self, it: discord.Interaction):
+        await it.response.defer()
+        if is_blacklisted(it.user.id): return await it.followup.send("🚫 Você está na Blacklist!", ephemeral=True)
+        if any(j['id']==it.user.id for j in self.jogadores): return await it.followup.send("Já na fila.", ephemeral=True)
+        
+        self.jogadores.append({'id':it.user.id,'m':it.user.mention})
+        await it.message.edit(embed=self.emb())
         
         lim = int(self.modo_str[0])*2 if self.modo_str[0].isdigit() else 2
         
         if len(self.jogadores)>=lim:
-            if not fila_mediadores: return await it.channel.send("⚠️ Sem mediador online.", delete_after=5)
-            med = fila_mediadores.pop(0); fila_mediadores.append(med)
+            if not fila_mediadores: 
+                self.jogadores.pop(); await it.message.edit(embed=self.emb())
+                return await it.followup.send("⚠️ Sem mediadores!", ephemeral=True)
             
-            cid = db_get_config("canal_th")
-            if not cid: return await it.channel.send("❌ Configure /canal.")
+            med_id = fila_mediadores.pop(0); fila_mediadores.append(med_id)
             
-            ch = bot.get_channel(int(cid))
-            th = await ch.create_thread(name="aguardando-inicio", type=discord.ChannelType.public_thread)
+            canais = [db_get_config("canal_1"), db_get_config("canal_2"), db_get_config("canal_3")]
+            validos = [c for c in canais if c]
+            if not validos: return await it.followup.send("❌ Sem canais configurados no /canal!", ephemeral=True)
             
-            msg_formal = (
-                f"Prezados Senhores,\n\n"
-                f"Sejam cordialmente bem-vindos à **WS APOSTAS**.\n"
-                f"Solicitamos a gentileza de aguardarem as instruções do mediador <@{med}>.\n"
-                f"Mantenham a postura e o respeito durante todo o procedimento.\n\n"
-                f"**Informações:**\n"
-                f"• Modalidade: {self.modo_str}\n"
-                f"• Valor: R$ {self.valor}"
-            )
-            ew = discord.Embed(description=msg_formal, color=COR_EMBED)
-            ew.set_image(url=BANNER_URL)
-            
-            await th.send(content=f"{' '.join([j['m'] for j in self.jogadores])} <@{med}>", embed=ew, view=ViewConfirmacao(self.jogadores, med, self.valor, self.modo_str))
-            self.jogadores=[]; await it.message.edit(embed=self.emb())
+            try:
+                ch = bot.get_channel(int(random.choice(validos)))
+                th = await ch.create_thread(name="confirmando", type=discord.ChannelType.public_thread)
+
+                async def limpar():
+                    await asyncio.sleep(0.1)
+                    async for msg in ch.history(limit=5):
+                        if msg.type == discord.MessageType.thread_created:
+                            try: await msg.delete()
+                            except: pass
+                            break
+                bot.loop.create_task(limpar())
+
+                ew = discord.Embed(title="Confirmar Partida", color=COR_VERDE)
+                ew.add_field(name="Jogadores", value="\n".join([j['m'] for j in self.jogadores]))
+                await th.send(content=f"<@{med_id}> " + " ".join([j['m'] for j in self.jogadores]), embed=ew, view=ViewConfirmacao(self.jogadores, med_id, self.valor, self.modo_str))
+                
+                self.jogadores=[]; await it.message.edit(embed=self.emb())
+            except Exception as e: print(e)
 
     async def leave(self, it):
-        self.jogadores=[j for j in self.jogadores if j['id']!=it.user.id]; await it.response.edit_message(embed=self.emb())
+        await it.response.defer()
+        self.jogadores=[j for j in self.jogadores if j['id']!=it.user.id]; await it.message.edit(embed=self.emb())
 
 # ==============================================================================
-#           EVENTO ID/SENHA
+#           COMANDOS DAS PRINTS (ADMIN & UTILITÁRIOS)
 # ==============================================================================
-@bot.event
-async def on_message(message):
-    if message.author.bot: return
 
-    if message.channel.id in partidas_andamento:
-        dados = partidas_andamento[message.channel.id]
-        if message.author.id == dados["mediador"]:
-            
-            # 1. ID
-            if dados["step"] == 0:
-                dados["room_id"] = message.content
-                dados["step"] = 1
-                partidas_andamento[message.channel.id] = dados
-                await message.add_reaction("✅")
-            
-            # 2. SENHA
-            elif dados["step"] == 1:
-                senha = message.content
-                room_id = dados["room_id"]
-                try: await message.delete() # Apaga a senha
-                except: pass
-                
-                # 🔥 LIMPEZA 2: Apaga a mensagem de "Aguardando Credenciais"
-                if "msg_instrucao_id" in dados:
-                    try:
-                        msg_instr = await message.channel.fetch_message(dados["msg_instrucao_id"])
-                        await msg_instr.delete()
-                    except: pass
+# --- ADMINISTRAÇÃO DE COINS ---
+@bot.tree.command(name="darcoin", description="Adiciona Coins ao saldo de um usuário")
+async def darcoin(it: discord.Interaction, user: discord.User, valor: float):
+    if not it.user.guild_permissions.administrator: return await it.response.send_message("Sem permissão.", ephemeral=True)
+    db_exec("INSERT OR IGNORE INTO pix_saldo (user_id, saldo) VALUES (?, 0)", (user.id,))
+    db_exec("UPDATE pix_saldo SET saldo = saldo + ? WHERE user_id = ?", (valor, user.id))
+    await it.response.send_message(f"✅ Adicionado **R$ {valor:.2f}** para {user.mention}.", ephemeral=True)
 
-                # --- PAINEL FINAL ---
-                e = discord.Embed(color=COR_VERDE)
-                e.set_thumbnail(url=IMAGEM_BONECA)
-                e.add_field(name="Modo:", value=dados['modo_str'], inline=False)
-                e.add_field(name="Jogadores:", value=dados['jogadores_str'], inline=False)
-                e.add_field(name="Mediador:", value=f"<@{dados['mediador']}>", inline=False)
-                e.add_field(name="Id:", value=f"```{room_id}```", inline=False)
-                e.add_field(name="Senha:", value=f"```{senha}```", inline=False)
-                e.set_image(url=BANNER_URL)
-                
-                # Envia com botão cinza
-                await message.channel.send(embed=e, view=ViewCredenciais(room_id))
-                
-                v_limpo = dados['valor'].replace("R$", "").strip().replace(",", ".")
-                try: await message.channel.edit(name=f"pagar-{v_limpo}")
-                except: pass
-                
-                del partidas_andamento[message.channel.id]
+@bot.tree.command(name="removercoin", description="Remove Coins de um usuário")
+async def removercoin(it: discord.Interaction, user: discord.User, valor: float):
+    if not it.user.guild_permissions.administrator: return await it.response.send_message("Sem permissão.", ephemeral=True)
+    db_exec("UPDATE pix_saldo SET saldo = MAX(0, saldo - ?) WHERE user_id = ?", (valor, user.id))
+    await it.response.send_message(f"✅ Removido **R$ {valor:.2f}** de {user.mention}.", ephemeral=True)
+
+# --- STATUS E PERFIL ---
+@bot.tree.command(name="darvitoria", description="Adiciona vitórias ao perfil do usuário")
+async def darvitoria(it: discord.Interaction, user: discord.User, quantidade: int):
+    if not it.user.guild_permissions.administrator: return await it.response.send_message("Sem permissão.", ephemeral=True)
+    db_exec("INSERT OR IGNORE INTO stats (user_id, vitorias, derrotas) VALUES (?, 0, 0)", (user.id,))
+    db_exec("UPDATE stats SET vitorias = vitorias + ? WHERE user_id = ?", (quantidade, user.id))
+    await it.response.send_message(f"✅ Adicionado **{quantidade} vitórias** para {user.mention}.", ephemeral=True)
+
+@bot.tree.command(name="limparperfil", description="Reseta vitórias/derrotas de um usuário")
+async def limparperfil(it: discord.Interaction, user: discord.User):
+    if not it.user.guild_permissions.administrator: return await it.response.send_message("Sem permissão.", ephemeral=True)
+    db_exec("UPDATE stats SET vitorias=0, derrotas=0 WHERE user_id=?", (user.id,))
+    await it.response.send_message(f"♻️ Perfil de {user.mention} resetado.", ephemeral=True)
+
+# --- BLACKLIST ---
+@bot.tree.command(name="blacklist", description="Banir usuário de usar o bot")
+async def blacklist(it: discord.Interaction, user: discord.User, motivo: str = "Sem motivo"):
+    if not it.user.guild_permissions.administrator: return await it.response.send_message("Sem permissão.", ephemeral=True)
+    db_exec("INSERT OR REPLACE INTO blacklist (user_id, motivo) VALUES (?, ?)", (user.id, motivo))
+    await it.response.send_message(f"🚫 {user.mention} adicionado à Blacklist. Motivo: {motivo}", ephemeral=True)
+
+@bot.tree.command(name="unblacklist", description="Remover usuário da Blacklist")
+async def unblacklist(it: discord.Interaction, user: discord.User):
+    if not it.user.guild_permissions.administrator: return await it.response.send_message("Sem permissão.", ephemeral=True)
+    db_exec("DELETE FROM blacklist WHERE user_id=?", (user.id,))
+    await it.response.send_message(f"✅ {user.mention} removido da Blacklist.", ephemeral=True)
+
+# --- UTILITÁRIOS ---
+@bot.tree.command(name="ping", description="Veja a latência do bot")
+async def ping(it: discord.Interaction):
+    await it.response.send_message(f"🏓 Pong! **{round(bot.latency * 1000)}ms**", ephemeral=True)
+
+@bot.tree.command(name="embed", description="Crie uma mensagem bonita (Embed)")
+async def criar_embed(it: discord.Interaction, titulo: str, descricao: str, cor_hex: str = "#2ecc71"):
+    if not it.user.guild_permissions.manage_messages: return await it.response.send_message("Sem permissão.", ephemeral=True)
+    try:
+        cor = int(cor_hex.replace("#", ""), 16)
+        embed = discord.Embed(title=titulo, description=descricao, color=cor)
+        if it.channel: await it.channel.send(embed=embed)
+        await it.response.send_message("✅ Embed enviado.", ephemeral=True)
+    except:
+        await it.response.send_message("❌ Cor inválida. Use Hex (ex: #ffffff).", ephemeral=True)
+
+@bot.tree.command(name="partidasativas", description="Mostra quantas partidas estão rolando agora")
+async def partidasativas(it: discord.Interaction):
+    qtd = len(partidas_ativas)
+    desc = "\n".join([f"• <#{cid}> - {d['modo']}" for cid, d in partidas_ativas.items()]) if qtd > 0 else "Nenhuma partida no momento."
+    e = discord.Embed(title=f"Partidas Ativas ({qtd})", description=desc, color=COR_VERDE)
+    await it.response.send_message(embed=e, ephemeral=True)
+
+@bot.tree.command(name="addemoji", description="Adiciona um emoji ao servidor via link")
+async def addemoji(it: discord.Interaction, nome: str, url: str):
+    if not it.user.guild_permissions.manage_emojis: return await it.response.send_message("Sem permissão.", ephemeral=True)
+    await it.response.defer()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200: return await it.followup.send("Erro ao baixar imagem.")
+                data = await resp.read()
+                emoji = await it.guild.create_custom_emoji(name=nome, image=data)
+                await it.followup.send(f"✅ Emoji adicionado: {emoji}")
+    except Exception as e:
+        await it.followup.send(f"Erro: {e}")
+
+# ==============================================================================
+#           COMANDOS PADRÃO (CANAL, PIX, FILA)
+# ==============================================================================
+
+@bot.tree.command(name="canal", description="Configurar 3 canais para sorteio aleatório")
+async def slash_canal(it: discord.Interaction):
+    if not it.user.guild_permissions.administrator: return
+    e = discord.Embed(title="Canais de Criação Aleatória", description="Selecione os canais abaixo.", color=COR_EMBED)
+    e.set_image(url=BANNER_URL)
+    await it.response.send_message(embed=e, view=ViewConfigCanais(), ephemeral=True)
+
+@bot.tree.command(name="pix", description="Painel Pix")
+async def slash_pix(it: discord.Interaction):
+    e=discord.Embed(title="Painel Pix", description="Gerencie sua chave PIX aqui.", color=COR_EMBED)
+    e.set_thumbnail(url=ICONE_ORG); e.set_image(url=BANNER_URL)
+    await it.response.send_message(embed=e, view=ViewPainelPix(), ephemeral=True)
+
+@bot.tree.command(name="painelsuascoins", description="Veja seu saldo de coins")
+async def painelsuascoins(it: discord.Interaction):
+    s = db_query("SELECT saldo FROM pix_saldo WHERE user_id=?", (it.user.id,))
+    saldo = s[0] if s else 0.0
+    st = db_query("SELECT vitorias, derrotas FROM stats WHERE user_id=?", (it.user.id,))
+    v, d = st if st else (0, 0)
     
-    await bot.process_commands(message)
-
-# ==============================================================================
-#           SLASH COMMANDS
-# ==============================================================================
-class ModalCriarFila(Modal, title="Criar Fila"):
-    m = TextInput(label="Modo", default="1v1", placeholder="Ex: 1v1, 4v4")
-    p = TextInput(label="Plataforma", default="Mobile", placeholder="Ex: Mobile, Emu")
-    v = TextInput(label="Valores", default="10 20", placeholder="Ex: 5 10 20")
-
-    async def on_submit(self, i):
-        await i.response.send_message("✅ Filas criadas.", ephemeral=True)
-        for val in self.v.value.split():
-            val = val.strip()
-            if "," not in val: val += ",00"
-            vi = ViewFila(f"{self.m.value}|{self.p.value}", val)
-            await i.channel.send(embed=vi.emb(), view=vi)
-            await asyncio.sleep(1)
-
-@bot.tree.command(name="criar_fila", description="Cria novas filas de aposta")
-async def slash_criar(it: discord.Interaction):
-    if not it.user.guild_permissions.administrator: return
-    await it.response.send_modal(ModalCriarFila())
-
-@bot.tree.command(name="canal", description="Definir canal")
-async def slash_canal(it: discord.Interaction, canal: discord.TextChannel):
-    if not it.user.guild_permissions.administrator: return
-    db_exec("INSERT OR REPLACE INTO config (chave, valor) VALUES (?, ?)", ("canal_th", str(canal.id)))
-    await it.response.send_message(f"✅ Canal definido: {canal.mention}", ephemeral=True)
+    e = discord.Embed(title=f"Perfil de {it.user.name}", color=COR_EMBED)
+    e.set_thumbnail(url=it.user.display_avatar.url)
+    e.add_field(name="💰 Coins", value=f"R$ {saldo:.2f}", inline=False)
+    e.add_field(name="🏆 Vitórias", value=str(v), inline=True)
+    e.add_field(name="💀 Derrotas", value=str(d), inline=True)
+    await it.response.send_message(embed=e, ephemeral=True)
 
 @bot.command()
 async def mediar(ctx):
     if not ctx.author.guild_permissions.manage_messages: return
-    class V(View):
-        @discord.ui.button(label="Entrar/Sair Staff", style=discord.ButtonStyle.primary)
-        async def t(self, i, b):
-            if i.user.id in fila_mediadores: fila_mediadores.remove(i.user.id); await i.response.send_message("Saiu.", ephemeral=True)
-            else: fila_mediadores.append(i.user.id); await i.response.send_message("Entrou.", ephemeral=True)
-    await ctx.send("Painel Staff", view=V())
+    class ViewMediar(View):
+        def gerar_embed(self):
+            desc = "**Mediadores Online:**\n" + ("\n".join([f"• <@{uid}>" for uid in fila_mediadores]) if fila_mediadores else "*Ninguém*")
+            e = discord.Embed(title="Painel de Mediadores", description=desc, color=COR_EMBED)
+            e.set_image(url=BANNER_URL) 
+            return e
+        @discord.ui.button(label="Entrar/Sair", style=discord.ButtonStyle.primary)
+        async def toggle(self, it, b): 
+            if it.user.id in fila_mediadores: fila_mediadores.remove(it.user.id)
+            else: fila_mediadores.append(it.user.id)
+            await it.response.edit_message(embed=self.gerar_embed())
+    v = ViewMediar(); await ctx.send(embed=v.gerar_embed(), view=v)
 
-@bot.event
-async def on_guild_join(guild):
-    if guild.id != ID_SERVIDOR_PERMITIDO: await guild.leave()
-
-@bot.event
-async def on_ready():
-    init_db()
-    print("🔄 Sincronizando...")
-    try:
-        guild = discord.Object(id=ID_SERVIDOR_PERMITIDO)
-        bot.tree.clear_commands(guild=None) 
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-        print("✅ Comandos Sincronizados!")
-    except Exception as e: print(e)
-    print(f"ONLINE ID: {ID_SERVIDOR_PERMITIDO}")
-
-if TOKEN: bot.run(TOKEN)
+@bot.command()
+async def fila(ctx):
+    if not ctx.author.guild_permissions.administrator: return
+    class ModalFila(Modal, title="Criar Filas"):
+        m = TextInput(label="Modo", default="4v4")
+        v = TextInput(label="Valores (espaço)", default="10 20")
+        async def on_submit(self, i):
+            await i.response.send_message("✅ Feito.", ephemeral=True)
+            for val in self.v.value.split():
+                vF = ViewFila(self.m.value, val if "," in val else val+",00")
         
