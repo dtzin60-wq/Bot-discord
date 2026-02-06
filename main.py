@@ -1,4 +1,4 @@
-import discord
+Import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput, UserSelect, ChannelSelect, RoleSelect
@@ -8,9 +8,13 @@ import asyncio
 import traceback
 
 # ==============================================================================
-#                         CONFIGURAÇÕES
+#                         CONFIGURAÇÕES DE SEGURANÇA
 # ==============================================================================
 TOKEN = os.getenv("TOKEN")
+
+# 🔒 COLOQUE AQUI O ID DO SEU SERVIDOR (1465929927206375527)
+# Para pegar o ID: Ative o modo desenvolvedor no Discord, clique com botão direito no nome do servidor > Copiar ID
+ID_SERVIDOR_PERMITIDO = 123456789012345678  # <--- TROQUE ISSO PELO ID DO SEU SERVIDOR
 
 # Cores e Imagens
 COR_EMBED = 0x2b2d31 
@@ -281,7 +285,6 @@ async def fila(ctx):
     class ModalFila(Modal, title="Gerar Filas"):
         m = TextInput(label="Modo", default="1v1")
         p = TextInput(label="Plataforma", default="Mobile")
-        # INSTRUÇÃO CLARA: SEPARAR POR ESPAÇO
         v = TextInput(label="Valores (Separe por ESPAÇO)", 
                       default="100,00 50,00 20,00 10,00 5,00",
                       style=discord.TextStyle.paragraph)
@@ -289,14 +292,10 @@ async def fila(ctx):
         async def on_submit(self, i):
             await i.response.send_message("Gerando filas...", ephemeral=True)
             
-            # AGORA SEPARA POR ESPAÇO (split vazio separa por qualquer espaço em branco)
-            # Isso permite "100,00 50,00" sem quebrar a vírgula
             raw_vals = self.v.value.split() 
-            
             vals = []
             for val in raw_vals:
                 val = val.strip()
-                # Adiciona ,00 se o usuário digitou só "100"
                 if ',' not in val: val += ",00"
                 vals.append(val)
 
@@ -315,9 +314,28 @@ async def fila(ctx):
     
     await ctx.send("Painel Admin", view=V())
 
+# ==============================================================================
+#           EVENTOS DE SEGURANÇA E INICIALIZAÇÃO
+# ==============================================================================
+
+# 1. EVENTO QUE IMPEDE O BOT DE ENTRAR EM SERVIDORES DESCONHECIDOS
+@bot.event
+async def on_guild_join(guild):
+    # Se o ID do servidor novo não for o ID permitido, sai imediatamente
+    if guild.id != ID_SERVIDOR_PERMITIDO:
+        print(f"🚫 Tentativa de adicionar em servidor não autorizado: {guild.name} ({guild.id}). Saindo...")
+        await guild.leave()
+
 @bot.event
 async def on_ready():
-    init_db(); await bot.tree.sync(); print("ONLINE - VÍRGULAS CORRIGIDAS")
+    init_db()
+    await bot.tree.sync()
+    print("ONLINE - MONITORAMENTO DE SERVIDOR ATIVO")
+    
+    # 2. VARREDURA INICIAL: Se o bot já estiver em servidores errados, ele sai agora.
+    for guild in bot.guilds:
+        if guild.id != ID_SERVIDOR_PERMITIDO:
+            print(f"👋 Saindo de servidor não autorizado detectado: {guild.name} ({guild.id})")
+            await guild.leave()
 
 if TOKEN: bot.run(TOKEN)
-                   
