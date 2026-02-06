@@ -20,7 +20,8 @@ ID_SERVIDOR_PERMITIDO = 1465929927206375527
 COR_EMBED = 0x2b2d31 
 COR_VERDE = 0x2ecc71 
 COR_CONFIRMADO = 0x2ecc71
-BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
+# ATUALIZADO COM O NOVO LINK DA IMAGEM
+BANNER_URL = "https://cdn.discordapp.com/attachments/1465929927764349102/1469174968255250463/Screenshot_2026-01-30-13-32-38-096_com.openai.chatgpt-edit.jpg?ex=6986b350&is=698561d0&hm=f4c6320b39ae922df6f9d0874c031bdb1ebde7d89af2f9418abe0d1a89a86854&"
 ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 IMAGEM_BONECA = "https://i.imgur.com/Xw0yYgH.png" 
 
@@ -339,4 +340,4 @@ async def on_ready():
             await guild.leave()
 
 if TOKEN: bot.run(TOKEN)
-            
+    
