@@ -12,16 +12,17 @@ import traceback
 # ==============================================================================
 TOKEN = os.getenv("TOKEN")
 
-# 🔒 ID DO SERVIDOR OFICIAL (WS APOSTAS)
-# O bot só funcionará neste servidor. Se estiver em outro, ele sairá automaticamente.
+# 🔒 ID DO SERVIDOR OFICIAL
 ID_SERVIDOR_PERMITIDO = 1465929927206375527 
 
 # Cores e Imagens
 COR_EMBED = 0x2b2d31 
 COR_VERDE = 0x2ecc71 
 COR_CONFIRMADO = 0x2ecc71
-# ATUALIZADO COM O NOVO LINK DA IMAGEM
+
+# ✅ BANNER CONFIGURADO (Aparecerá grande embaixo da fila)
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465929927764349102/1469174968255250463/Screenshot_2026-01-30-13-32-38-096_com.openai.chatgpt-edit.jpg?ex=6986b350&is=698561d0&hm=f4c6320b39ae922df6f9d0874c031bdb1ebde7d89af2f9418abe0d1a89a86854&"
+
 ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 IMAGEM_BONECA = "https://i.imgur.com/Xw0yYgH.png" 
 
@@ -121,6 +122,9 @@ class ViewConfirmacao(View):
             e.add_field(name="💎 Valor da Aposta", value=f"R$ {self.valor}", inline=False)
             e.add_field(name="👥 Jogadores", value="\n".join([j['m'] for j in self.jogadores]), inline=False)
             
+            # Banner também na confirmação para ficar bonito
+            e.set_image(url=BANNER_URL)
+            
             await it.channel.send(content=f"<@{self.med_id}> {' '.join([j['m'] for j in self.jogadores])}", embed=e)
             db_exec("UPDATE pix_saldo SET saldo = saldo + 0.10 WHERE user_id=?", (self.med_id,))
 
@@ -134,7 +138,7 @@ class ViewConfirmacao(View):
         await it.response.send_message(f"🏳️ {it.user.mention} sugeriu combinar regras.", ephemeral=False)
 
 # ==============================================================================
-#           VIEW: FILA
+#           VIEW: FILA (Onde o Banner vai aparecer)
 # ==============================================================================
 class ViewFila(View):
     def __init__(self, modo_str, valor):
@@ -159,7 +163,11 @@ class ViewFila(View):
         e.add_field(name="💰 Valor", value=f"**R$ {self.valor}**", inline=True)
         lst = [f"👤 {j['m']} - {j['t']}" if j['t'] else f"👤 {j['m']}" for j in self.jogadores]
         e.add_field(name="👥 Jogadores", value="\n".join(lst) or "*Aguardando...*", inline=False)
-        e.set_image(url=BANNER_URL); return e
+        
+        # 🔥 AQUI ESTÁ O COMANDO QUE FAZ A FOTO APARECER
+        e.set_image(url=BANNER_URL) 
+        
+        return e
 
     async def join(self, it, tipo):
         if any(j['id']==it.user.id for j in self.jogadores): return await it.response.send_message("Já está na fila.", ephemeral=True)
@@ -319,10 +327,8 @@ async def fila(ctx):
 #           EVENTOS DE SEGURANÇA E INICIALIZAÇÃO
 # ==============================================================================
 
-# 1. EVENTO QUE IMPEDE O BOT DE ENTRAR EM SERVIDORES DESCONHECIDOS
 @bot.event
 async def on_guild_join(guild):
-    # Se o ID do servidor novo não for o ID permitido, sai imediatamente
     if guild.id != ID_SERVIDOR_PERMITIDO:
         print(f"🚫 Tentativa de adicionar em servidor não autorizado: {guild.name} ({guild.id}). Saindo...")
         await guild.leave()
@@ -333,11 +339,10 @@ async def on_ready():
     await bot.tree.sync()
     print(f"ONLINE - PROTEGIDO PARA O SERVIDOR ID: {ID_SERVIDOR_PERMITIDO}")
     
-    # 2. VARREDURA INICIAL: Se o bot já estiver em servidores errados, ele sai agora.
     for guild in bot.guilds:
         if guild.id != ID_SERVIDOR_PERMITIDO:
             print(f"👋 Saindo de servidor não autorizado detectado: {guild.name} ({guild.id})")
             await guild.leave()
 
 if TOKEN: bot.run(TOKEN)
-            
+                
