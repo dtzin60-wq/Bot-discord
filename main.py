@@ -20,7 +20,7 @@ COR_EMBED = 0x2b2d31
 COR_VERDE = 0x2ecc71 
 COR_CONFIRMADO = 0x2ecc71
 
-# ✅ BANNER RESTAURADO (Voltei para a imagem anterior)
+# ✅ BANNER (Se sumir, troque por um link do Imgur)
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 
 ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
@@ -138,7 +138,7 @@ class ViewConfirmacao(View):
         await it.response.send_message(f"🏳️ {it.user.mention} sugeriu combinar regras.", ephemeral=False)
 
 # ==============================================================================
-#           VIEW: FILA (Onde o Banner vai aparecer)
+#           VIEW: FILA (BANNER AQUI)
 # ==============================================================================
 class ViewFila(View):
     def __init__(self, modo_str, valor):
@@ -164,7 +164,7 @@ class ViewFila(View):
         lst = [f"👤 {j['m']} - {j['t']}" if j['t'] else f"👤 {j['m']}" for j in self.jogadores]
         e.add_field(name="👥 Jogadores", value="\n".join(lst) or "*Aguardando...*", inline=False)
         
-        # Banner aparece grande embaixo
+        # 🔥 COMANDO DO BANNER GRANDE
         e.set_image(url=BANNER_URL) 
         
         return e
@@ -196,6 +196,36 @@ class ViewFila(View):
         self.jogadores=[j for j in self.jogadores if j['id']!=it.user.id]; await it.response.edit_message(embed=self.emb())
 
 # ==============================================================================
+#           MODAL: CRIAR FILA
+# ==============================================================================
+class ModalCriarFila(Modal, title="Criar Fila de Apostas"):
+    m = TextInput(label="Modo", default="1v1", placeholder="Ex: 1v1, 4v4")
+    p = TextInput(label="Plataforma", default="Mobile", placeholder="Ex: Mobile, Emu")
+    v = TextInput(label="Valores (Separe por ESPAÇO)", 
+                  default="100,00 50,00 20,00 10,00 5,00",
+                  style=discord.TextStyle.paragraph,
+                  placeholder="Ex: 5,00 10,00 20,00")
+
+    async def on_submit(self, i: discord.Interaction):
+        await i.response.send_message("✅ Gerando filas...", ephemeral=True)
+        
+        raw_vals = self.v.value.split() 
+        vals = []
+        for val in raw_vals:
+            val = val.strip()
+            if ',' not in val: val += ",00"
+            vals.append(val)
+
+        if len(vals) > 15: vals = vals[:15]
+        
+        modo_formatado = f"{self.m.value}|{self.p.value}" 
+        
+        for val in vals:
+            vi = ViewFila(modo_formatado, val)
+            await i.channel.send(embed=vi.emb(), view=vi)
+            await asyncio.sleep(0.5)
+
+# ==============================================================================
 #           PAINÉIS
 # ==============================================================================
 
@@ -224,11 +254,18 @@ class ViewPainelPix(View):
 class ViewBotConfig(View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Config Filas", style=discord.ButtonStyle.secondary, emoji="⚙️")
-    async def btn_filas(self, it, b): await it.response.send_message("Use o comando .fila para gerar", ephemeral=True)
+    async def btn_filas(self, it, b): await it.response.send_message("Use o comando /criar_fila", ephemeral=True)
 
 # ==============================================================================
-#           COMANDOS
+#           COMANDOS SLASH (NOVO)
 # ==============================================================================
+
+# 🔹 COMANDO NOVO: /criar_fila
+@bot.tree.command(name="criar_fila", description="Cria filas de apostados")
+async def slash_criar_fila(it: discord.Interaction):
+    if not it.user.guild_permissions.administrator: 
+        return await it.response.send_message("Você não tem permissão de Admin.", ephemeral=True)
+    await it.response.send_modal(ModalCriarFila())
 
 @bot.tree.command(name="pix", description="Painel Pix")
 async def slash_pix(it: discord.Interaction):
@@ -287,42 +324,6 @@ async def mediar(ctx):
         async def staff(self, it, b): await it.response.send_message("Log Staff", ephemeral=True)
     v = ViewMediar(); await ctx.send(embed=v.gerar_embed(), view=v)
 
-@bot.command()
-async def fila(ctx):
-    if not ctx.author.guild_permissions.administrator: return
-    
-    class ModalFila(Modal, title="Gerar Filas"):
-        m = TextInput(label="Modo", default="1v1")
-        p = TextInput(label="Plataforma", default="Mobile")
-        v = TextInput(label="Valores (Separe por ESPAÇO)", 
-                      default="100,00 50,00 20,00 10,00 5,00",
-                      style=discord.TextStyle.paragraph)
-
-        async def on_submit(self, i):
-            await i.response.send_message("Gerando filas...", ephemeral=True)
-            
-            raw_vals = self.v.value.split() 
-            vals = []
-            for val in raw_vals:
-                val = val.strip()
-                if ',' not in val: val += ",00"
-                vals.append(val)
-
-            if len(vals) > 15: vals = vals[:15]
-            
-            modo_formatado = f"{self.m.value}|{self.p.value}" 
-            
-            for val in vals:
-                vi = ViewFila(modo_formatado, val)
-                await i.channel.send(embed=vi.emb(), view=vi)
-                await asyncio.sleep(0.5)
-                
-    class V(View):
-        @discord.ui.button(label="Gerar", style=discord.ButtonStyle.danger)
-        async def g(self, i, b): await i.response.send_modal(ModalFila())
-    
-    await ctx.send("Painel Admin", view=V())
-
 # ==============================================================================
 #           EVENTOS DE SEGURANÇA E INICIALIZAÇÃO
 # ==============================================================================
@@ -336,7 +337,12 @@ async def on_guild_join(guild):
 @bot.event
 async def on_ready():
     init_db()
-    await bot.tree.sync()
+    try:
+        await bot.tree.sync()
+        print(f"✅ Comandos Slash Sincronizados!")
+    except Exception as e:
+        print(f"❌ Erro ao sincronizar Slash: {e}")
+        
     print(f"ONLINE - PROTEGIDO PARA O SERVIDOR ID: {ID_SERVIDOR_PERMITIDO}")
     
     for guild in bot.guilds:
