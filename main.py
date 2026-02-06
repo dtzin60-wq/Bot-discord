@@ -20,7 +20,7 @@ COR_EMBED = 0x2b2d31
 COR_VERDE = 0x2ecc71 
 COR_CONFIRMADO = 0x2ecc71
 
-# ✅ BANNER (Se sumir, troque por um link do Imgur)
+# ✅ BANNER (Imagem original restaurada)
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 
 ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
@@ -122,7 +122,6 @@ class ViewConfirmacao(View):
             e.add_field(name="💎 Valor da Aposta", value=f"R$ {self.valor}", inline=False)
             e.add_field(name="👥 Jogadores", value="\n".join([j['m'] for j in self.jogadores]), inline=False)
             
-            # Banner na confirmação
             e.set_image(url=BANNER_URL)
             
             await it.channel.send(content=f"<@{self.med_id}> {' '.join([j['m'] for j in self.jogadores])}", embed=e)
@@ -138,7 +137,7 @@ class ViewConfirmacao(View):
         await it.response.send_message(f"🏳️ {it.user.mention} sugeriu combinar regras.", ephemeral=False)
 
 # ==============================================================================
-#           VIEW: FILA (BANNER AQUI)
+#           VIEW: FILA
 # ==============================================================================
 class ViewFila(View):
     def __init__(self, modo_str, valor):
@@ -164,7 +163,7 @@ class ViewFila(View):
         lst = [f"👤 {j['m']} - {j['t']}" if j['t'] else f"👤 {j['m']}" for j in self.jogadores]
         e.add_field(name="👥 Jogadores", value="\n".join(lst) or "*Aguardando...*", inline=False)
         
-        # 🔥 COMANDO DO BANNER GRANDE
+        # COMANDO QUE GARANTE O BANNER GRANDE
         e.set_image(url=BANNER_URL) 
         
         return e
@@ -257,10 +256,9 @@ class ViewBotConfig(View):
     async def btn_filas(self, it, b): await it.response.send_message("Use o comando /criar_fila", ephemeral=True)
 
 # ==============================================================================
-#           COMANDOS SLASH (NOVO)
+#           COMANDOS SLASH
 # ==============================================================================
 
-# 🔹 COMANDO NOVO: /criar_fila
 @bot.tree.command(name="criar_fila", description="Cria filas de apostados")
 async def slash_criar_fila(it: discord.Interaction):
     if not it.user.guild_permissions.administrator: 
@@ -325,7 +323,7 @@ async def mediar(ctx):
     v = ViewMediar(); await ctx.send(embed=v.gerar_embed(), view=v)
 
 # ==============================================================================
-#           EVENTOS DE SEGURANÇA E INICIALIZAÇÃO
+#           EVENTOS DE INICIALIZAÇÃO E SYNC
 # ==============================================================================
 
 @bot.event
@@ -337,11 +335,16 @@ async def on_guild_join(guild):
 @bot.event
 async def on_ready():
     init_db()
+    
+    # 🔥 AQUI ESTÁ A MÁGICA PARA APARECER RÁPIDO:
+    # Em vez de sync global, fazemos sync apenas no SEU servidor.
     try:
-        await bot.tree.sync()
-        print(f"✅ Comandos Slash Sincronizados!")
+        guild_alvo = discord.Object(id=ID_SERVIDOR_PERMITIDO)
+        bot.tree.copy_global_to(guild=guild_alvo)
+        await bot.tree.sync(guild=guild_alvo)
+        print(f"✅ Comandos Slash sincronizados instantaneamente para o servidor {ID_SERVIDOR_PERMITIDO}!")
     except Exception as e:
-        print(f"❌ Erro ao sincronizar Slash: {e}")
+        print(f"❌ Erro no sync: {e}")
         
     print(f"ONLINE - PROTEGIDO PARA O SERVIDOR ID: {ID_SERVIDOR_PERMITIDO}")
     
@@ -351,4 +354,4 @@ async def on_ready():
             await guild.leave()
 
 if TOKEN: bot.run(TOKEN)
-    
+        
