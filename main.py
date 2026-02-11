@@ -58,7 +58,7 @@ def db_increment_counter(tipo):
         con.commit()
         res = cur.execute("SELECT contagem FROM counters WHERE tipo = ?", (tipo,)).fetchone()
         return res[0]
-        # ==============================================================================
+# ==============================================================================
 #           VIEW: CONFIRMAÇÃO (THREAD)
 # ==============================================================================
 class ViewConfirmacao(View):
@@ -306,7 +306,7 @@ class ViewMediarPainel(View):
         select.callback = cb_remover
         view_rem.add_item(select)
         await it.response.send_message("Quem você quer remover?", view=view_rem, ephemeral=True)
-         # ==============================================================================
+    # ==============================================================================
 #           SLASH COMMANDS
 # ==============================================================================
 
@@ -405,4 +405,4 @@ async def on_ready():
 
 if TOKEN:
     bot.run(TOKEN)
-        
+                       
