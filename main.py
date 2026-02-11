@@ -15,13 +15,13 @@ TOKEN = os.getenv("TOKEN")
 COR_EMBED = 0x2b2d31 
 COR_VERDE = 0x2ecc71 
 COR_VERMELHO = 0xe74c3c
-COR_CONFIRMADO = 0x2ecc71
-COR_DISCORD = 0x5865F2 # Cor azulzinha da imagem que você mandou
+COR_CONFIRMADO = 0x2ecc71 # Verde da confirmação
+COR_DISCORD = 0x5865F2 # Azul/Roxo do Discord (Ação realizada)
 
 # Imagens
 BANNER_URL = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
 ICONE_ORG = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg"
-IMAGEM_BONECA = "https://i.imgur.com/Xw0yYgH.png" 
+IMAGEM_BONECA = "https://cdn.discordapp.com/attachments/1465930366916231179/1465940841217658923/IMG_20260128_021230.jpg" 
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
@@ -62,7 +62,7 @@ def db_increment_counter(tipo):
         return res[0]
 
 # ==============================================================================
-#           VIEW: CONFIRMAÇÃO DA PARTIDA
+#           VIEW: CONFIRMAÇÃO DA PARTIDA (DESIGN ATUALIZADO)
 # ==============================================================================
 class ViewConfirmacao(View):
     def __init__(self, jogadores, med_id, valor, modo_completo):
@@ -75,26 +75,35 @@ class ViewConfirmacao(View):
 
     @discord.ui.button(label="Confirmar Partida", style=discord.ButtonStyle.success, emoji="✅")
     async def confirmar(self, it: discord.Interaction, btn: Button):
+        # Verifica se quem clicou está na partida
         if it.user.id not in [j['id'] for j in self.jogadores]: 
             return await it.response.send_message("Você não está nesta partida.", ephemeral=True)
         
+        # Verifica se já confirmou
         if it.user.id in self.confirms: 
             return await it.response.send_message("Você já confirmou.", ephemeral=True)
         
         self.confirms.append(it.user.id)
-        await it.channel.send(f"✅ **{it.user.mention}** confirmou a partida! ({len(self.confirms)}/{len(self.jogadores)})")
+        
+        # Feedback visual que alguém confirmou
+        await it.channel.send(f"✅ **{it.user.mention}** confirmou! ({len(self.confirms)}/{len(self.jogadores)})", delete_after=5)
 
-        # Se todos confirmaram
+        # === LÓGICA FINAL QUANDO TODOS CONFIRMAM ===
         if len(self.confirms) >= len(self.jogadores):
             self.stop()
-            self.clear_items() 
             
-            # Pega Pix do Mediador
+            # 1. Apaga a mensagem antiga (botões e "aguardando") para limpar o chat
+            try:
+                await it.message.delete()
+            except:
+                pass # Se não der pra apagar, ignora
+
+            # 2. Prepara dados do banco
             pix_data = db_query("SELECT nome, chave, qrcode FROM pix WHERE user_id=?", (self.med_id,))
             
+            # Renomeia Canal
             modo_upper = self.modo_completo.upper()
             prefixo, tipo_db = "Sala", "geral"
-
             if "MOBILE" in modo_upper: prefixo, tipo_db = "Mobile", "mobile"
             elif "MISTO" in modo_upper: prefixo, tipo_db = "Misto", "misto"
             elif "FULL" in modo_upper: prefixo, tipo_db = "Full", "full"
@@ -104,42 +113,72 @@ class ViewConfirmacao(View):
             try: await it.channel.edit(name=f"{prefixo}-{num}", locked=True)
             except: pass 
             
+            # 3. Calcula Taxa (Valor da Sala)
+            try:
+                v_clean = self.valor.replace("R$","").replace(" ","").replace(".","").replace(",",".")
+                v_f = float(v_clean)
+                taxa = max(v_f * 0.10, 0.10) # 10%
+                taxa_str = f"R$ {taxa:.2f}".replace(".",",")
+            except: 
+                taxa_str = "R$ ???"
+
+            # 4. Formata Estilo
             estilo = self.modo_completo.split('|')[0].strip() if '|' in self.modo_completo else self.modo_completo
-            
-            e = discord.Embed(title=f"🚀 Partida Iniciada #{num}", color=COR_CONFIRMADO)
+            if "1v1" in self.modo_str_clean().lower() and "gel" not in estilo.lower():
+                # Tenta pegar o tipo (Gel Normal/Infinito) do primeiro jogador
+                try: estilo = f"{estilo} {self.jogadores[0]['t']}"
+                except: pass
+
+            # === MONTAGEM DO EMBED (IGUAL A FOTO 2) ===
+            e = discord.Embed(title="Partida Confirmada", color=COR_CONFIRMADO)
             e.set_thumbnail(url=IMAGEM_BONECA)
-            e.add_field(name="🎮 Estilo", value=estilo, inline=True)
-            e.add_field(name="💎 Valor", value=f"R$ {self.valor}", inline=True)
             
+            # Campo 1: Estilo
+            e.add_field(name="🎮 Estilo de Jogo", value=estilo, inline=False)
+            
+            # Campo 2: Info da Aposta (Valor da Sala e Mediador)
+            e.add_field(name="ℹ️ Informações da Aposta", 
+                        value=f"Valor Da Sala: {taxa_str}\nMediador: <@{self.med_id}>", 
+                        inline=False)
+            
+            # Campo 3: Valor da Aposta
+            e.add_field(name="💎 Valor da Aposta", value=f"R$ {self.valor}", inline=False)
+            
+            # Campo 4: Jogadores
+            lista_jogadores = "\n".join([f"{j['m']}" for j in self.jogadores])
+            e.add_field(name="👥 Jogadores", value=lista_jogadores, inline=False)
+
+            # Campo 5: PIX (Abaixo dos nomes, como pedido)
             if pix_data:
                 nome_pix, chave_pix, qr_pix = pix_data
                 msg_pix = f"**Titular:** {nome_pix}\n**Chave:** ```{chave_pix}```"
                 if qr_pix: msg_pix += f"\n[QR Code]({qr_pix})"
-                e.add_field(name="💸 PAGAMENTO (Mediador)", value=msg_pix, inline=False)
+                e.add_field(name="💸 PAGAMENTO (PIX)", value=msg_pix, inline=False)
             else:
-                e.add_field(name="⚠️ ATENÇÃO", value=f"O mediador <@{self.med_id}> **NÃO CADASTROU O PIX**!", inline=False)
+                e.add_field(name="⚠️ PIX INDISPONÍVEL", value=f"O mediador <@{self.med_id}> não cadastrou Pix.", inline=False)
 
-            lista_jogadores = "\n".join([f"• {j['m']}" for j in self.jogadores])
-            e.add_field(name="👥 Jogadores", value=lista_jogadores, inline=False)
-            e.set_footer(text="Bom jogo! Enviem o comprovante no chat.")
-
+            # Envia a nova mensagem limpa
             mentions = f"<@{self.med_id}> " + " ".join([j['m'] for j in self.jogadores])
             await it.channel.send(content=mentions, embed=e)
             
+            # Registra comissão
             db_exec("UPDATE pix_saldo SET saldo = saldo + 0.10 WHERE user_id=?", (self.med_id,))
+
+    def modo_str_clean(self):
+        return self.modo_completo.split('|')[0]
 
     @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.danger, emoji="✖️")
     async def recusar(self, it: discord.Interaction, btn: Button):
         if it.user.id in [j['id'] for j in self.jogadores] or it.user.id == self.med_id:
-            await it.channel.send(f"🚫 Partida cancelada por {it.user.mention}. Fechando tópico...")
+            await it.channel.send(f"🚫 Partida cancelada por {it.user.mention}. Deletando...")
             self.stop()
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
             await it.channel.delete()
         else:
             await it.response.send_message("Sem permissão.", ephemeral=True)
 
 # ==============================================================================
-#           VIEW: FILA (LIMITE DE 2 JOGADORES)
+#           VIEW: FILA (MANTIDA - LIMITE 2)
 # ==============================================================================
 class ViewFila(View):
     def __init__(self, modo_str, valor):
@@ -188,7 +227,7 @@ class ViewFila(View):
         self.jogadores.append({'id': it.user.id, 'm': it.user.mention, 't': tipo})
         await it.response.edit_message(embed=self.emb(), view=self)
         
-        if len(self.jogadores) >= 2:
+        if len(self.jogadores) >= 2: # Limite 2
             if not fila_mediadores:
                 await it.channel.send(f"⚠️ {it.user.mention} Sem mediadores online!", delete_after=5)
                 return
@@ -198,8 +237,7 @@ class ViewFila(View):
                 return await it.channel.send("❌ Configure o canal (/canal).")
             
             canal_alvo = bot.get_channel(int(cid))
-            if not canal_alvo:
-                return await it.channel.send("❌ Canal de tópicos não encontrado.")
+            if not canal_alvo: return await it.channel.send("❌ Canal não encontrado.")
 
             med_id = fila_mediadores.pop(0)
             fila_mediadores.append(med_id) 
@@ -211,7 +249,7 @@ class ViewFila(View):
             ew.set_thumbnail(url=IMAGEM_BONECA)
             ew.add_field(name="👑 Info", value=f"{self.modo_str} | R$ {self.valor}", inline=False)
             ew.add_field(name="👮 Mediador", value=f"<@{med_id}>", inline=False)
-            ew.description = "```Clique em ✅ para confirmar e ver o PIX.```"
+            ew.description = "```Clique em ✅ para confirmar.```"
             
             view_conf = ViewConfirmacao(self.jogadores[:], med_id, self.valor, self.modo_str)
             await th.send(content=" ".join([j['m'] for j in self.jogadores]) + f" <@{med_id}>", embed=ew, view=view_conf)
@@ -225,7 +263,7 @@ class ViewFila(View):
         await it.response.edit_message(embed=self.emb(), view=self)
 
 # ==============================================================================
-#           VIEW: MEDIADOR STAFF (COM O EMBED DA FOTO)
+#           VIEW: MEDIADOR STAFF (IGUAL A FOTO 1)
 # ==============================================================================
 class ViewMediadorFila(View):
     def __init__(self): super().__init__(timeout=None)
@@ -247,15 +285,11 @@ class ViewMediadorFila(View):
     async def entrar(self, it: discord.Interaction, b: Button):
         if it.user.id not in fila_mediadores:
             fila_mediadores.append(it.user.id)
-            
-            # 1. Atualiza o painel público sem responder a interação ainda
             await it.message.edit(embed=self.gerar_embed(), view=self)
             
-            # 2. Cria o embed idêntico ao da foto
+            # --- MENSAGEM DA FOTO 1 ---
             e = discord.Embed(title="✅ Ação realizada com sucesso!", color=COR_DISCORD)
             e.description = f"{it.user.mention}, a sua operação foi concluída com êxito.\n↪ Você entrou na fila com sucesso."
-            
-            # 3. Responde apenas para o usuário (Ephemeral)
             await it.response.send_message(embed=e, ephemeral=True)
         else:
             await it.response.send_message("Você já está na fila.", ephemeral=True)
@@ -264,15 +298,11 @@ class ViewMediadorFila(View):
     async def sair(self, it: discord.Interaction, b: Button):
         if it.user.id in fila_mediadores:
             fila_mediadores.remove(it.user.id)
-            
-            # 1. Atualiza o painel público
             await it.message.edit(embed=self.gerar_embed(), view=self)
             
-            # 2. Cria o embed idêntico ao da foto
+            # --- MENSAGEM DA FOTO 1 ---
             e = discord.Embed(title="✅ Ação realizada com sucesso!", color=COR_DISCORD)
             e.description = f"{it.user.mention}, a sua operação foi concluída com êxito.\n↪ Você saiu da fila com sucesso."
-            
-            # 3. Responde
             await it.response.send_message(embed=e, ephemeral=True)
         else:
             await it.response.send_message("Você não está na fila.", ephemeral=True)
@@ -282,7 +312,7 @@ class ViewMediadorFila(View):
         await it.response.edit_message(embed=self.gerar_embed(), view=self)
 
 # ==============================================================================
-#           PAINEL PIX
+#           PAINEL PIX & COMANDOS
 # ==============================================================================
 class ViewPainelPix(View):
     def __init__(self): super().__init__(timeout=None)
@@ -302,9 +332,6 @@ class ViewPainelPix(View):
         if d: await it.response.send_message(f"👤 {d[1]}\n🔑 `{d[2]}`", ephemeral=True)
         else: await it.response.send_message("❌ Sem cadastro.", ephemeral=True)
 
-# ==============================================================================
-#           COMANDOS
-# ==============================================================================
 @bot.tree.command(name="pix", description="Gerenciar Pix")
 async def slash_pix(it: discord.Interaction):
     await it.response.send_message(embed=discord.Embed(title="Pix", color=COR_EMBED), view=ViewPainelPix(), ephemeral=True)
