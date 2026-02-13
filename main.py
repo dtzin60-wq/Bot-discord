@@ -4,7 +4,7 @@ from discord.ui import View, Button, Modal, TextInput
 import yt_dlp
 import asyncio
 import os
-import imageio_ffmpeg # Importa a biblioteca mágica
+import imageio_ffmpeg # A biblioteca que salva vidas
 
 # ==============================================================================
 #                         CONFIGURAÇÕES
@@ -13,14 +13,14 @@ TOKEN = os.getenv("TOKEN")
 
 filas = {}
 
-# Pega o caminho do FFmpeg automaticamente
-FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-print(f"FFmpeg encontrado em: {FFMPEG_PATH}") # Para confirmar nos logs
+# Pega o caminho REAL do executável FFmpeg baixado pelo Python
+FFMPEG_EXECUTAVEL = imageio_ffmpeg.get_ffmpeg_exe()
+print(f"✅ FFmpeg detectado em: {FFMPEG_EXECUTAVEL}")
 
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
-    'default_search': 'scsearch', # Mantém SoundCloud para evitar bloqueio
+    'default_search': 'scsearch', # SoundCloud (Sem bloqueio)
     'quiet': True,
     'no_warnings': True,
 }
@@ -46,6 +46,7 @@ async def tocar_proxima(guild, voice_client, text_channel):
     busca = proxima_musica['busca']
     
     try:
+        # Busca o link
         with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
             info = ydl.extract_info(busca, download=False)
             if 'entries' in info:
@@ -53,18 +54,20 @@ async def tocar_proxima(guild, voice_client, text_channel):
             url = info['url']
             titulo = info['title']
 
-        # AQUI ESTÁ O SEGREDO: Usamos o caminho exato do FFmpeg baixado
-        source = discord.FFmpegPCMAudio(url, executable=FFMPEG_PATH, **FFMPEG_OPTIONS)
+        # TOCA A MÚSICA USANDO O CAMINHO CORRETO DO FFMPEG
+        source = discord.FFmpegPCMAudio(url, executable=FFMPEG_EXECUTAVEL, **FFMPEG_OPTIONS)
         
         def after_playing(error):
+            if error:
+                print(f"Erro interno no player: {error}")
             asyncio.run_coroutine_threadsafe(next_song(guild, voice_client, text_channel), bot.loop)
 
         voice_client.play(source, after=after_playing)
         await text_channel.send(f"🎶 **Tocando:** {titulo}")
 
     except Exception as e:
-        print(f"Erro: {e}")
-        await text_channel.send(f"❌ Erro: `{e}`")
+        print(f"Erro ao tocar: {e}") # Mostra no log do Railway
+        await text_channel.send(f"❌ Erro: `{str(e)}`")
         await next_song(guild, voice_client, text_channel)
 
 async def next_song(guild, voice_client, text_channel):
@@ -121,6 +124,8 @@ async def cmd_leave(ctx):
         filas[ctx.guild.id] = []
         await ctx.voice_client.disconnect()
         await ctx.send("👋 Saí.")
+    else:
+        await ctx.send("❌ Não estou conectado.")
 
 @bot.event
 async def on_ready():
@@ -128,4 +133,4 @@ async def on_ready():
 
 if __name__ == "__main__":
     if TOKEN: bot.run(TOKEN)
-    
+                          
