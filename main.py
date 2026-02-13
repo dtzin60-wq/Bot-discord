@@ -4,6 +4,7 @@ from discord.ui import View, Button, Modal, TextInput
 import yt_dlp
 import asyncio
 import os
+import shutil
 
 # ==============================================================================
 #                         CONFIGURAÇÕES
@@ -25,7 +26,6 @@ FFMPEG_OPTIONS = {
     'options': '-vn'
 }
 
-# Define o prefixo como PONTO (.)
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
@@ -33,7 +33,14 @@ bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 #                         SISTEMA DE MÚSICA
 # ==============================================================================
 
-def tocar_proxima(guild, voice_client):
+async def enviar_erro(channel, erro):
+    """Envia o erro para o chat para facilitar o debug"""
+    if "ffmpeg" in str(erro).lower():
+        await channel.send("⚠️ **ERRO CRÍTICO:** O FFmpeg não está instalado no sistema.\nCertifique-se de ter criado o arquivo `nixpacks.toml` no Railway.")
+    else:
+        await channel.send(f"❌ Erro ao tentar tocar: `{erro}`")
+
+def tocar_proxima(guild, voice_client, text_channel):
     guild_id = guild.id
     if not filas.get(guild_id):
         return
@@ -42,7 +49,14 @@ def tocar_proxima(guild, voice_client):
     busca = proxima_musica['busca']
     
     def extrair_source():
-        opts = {'format': 'bestaudio/best', 'noplaylist': True, 'quiet': True, 'default_search': 'ytsearch'}
+        # Opções específicas para extração direta
+        opts = {
+            'format': 'bestaudio/best', 
+            'noplaylist': True, 
+            'quiet': True, 
+            'default_search': 'ytsearch',
+            'source_address': '0.0.0.0' # Ajuda a evitar problemas de IPv6 no Railway
+        }
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(busca, download=False)
             if 'entries' in info: info = info['entries'][0]
@@ -50,18 +64,33 @@ def tocar_proxima(guild, voice_client):
 
     try:
         url_audio, titulo_real = extrair_source()
+        
+        # Verifica se o executável ffmpeg existe antes de tentar tocar
+        if not shutil.which("ffmpeg"):
+            raise Exception("Executável 'ffmpeg' não encontrado no sistema.")
+
         source = discord.FFmpegPCMAudio(url_audio, **FFMPEG_OPTIONS)
         
         def after_playing(error):
-            asyncio.run_coroutine_threadsafe(next_song_check(guild, voice_client), bot.loop)
+            if error:
+                print(f"Erro no Player: {error}")
+                asyncio.run_coroutine_threadsafe(enviar_erro(text_channel, error), bot.loop)
+            
+            # Chama a próxima música recursivamente
+            asyncio.run_coroutine_threadsafe(next_song_check(guild, voice_client, text_channel), bot.loop)
 
         voice_client.play(source, after=after_playing)
-    except Exception as e:
-        print(f"Erro: {e}")
-        tocar_proxima(guild, voice_client)
+        asyncio.run_coroutine_threadsafe(text_channel.send(f"🎶 **Tocando Agora:** {titulo_real}"), bot.loop)
 
-async def next_song_check(guild, voice_client):
-    tocar_proxima(guild, voice_client)
+    except Exception as e:
+        print(f"Erro ao processar música: {e}")
+        # Avisa no chat qual foi o erro
+        asyncio.run_coroutine_threadsafe(enviar_erro(text_channel, e), bot.loop)
+        # Tenta a próxima mesmo com erro
+        tocar_proxima(guild, voice_client, text_channel)
+
+async def next_song_check(guild, voice_client, text_channel):
+    tocar_proxima(guild, voice_client, text_channel)
 
 # ==============================================================================
 #                         MODAL E BOTÕES
@@ -90,8 +119,9 @@ class ModalMusica(Modal, title="Player de Música"):
         filas[guild_id].append({'busca': self.nome_musica.value, 'user': interaction.user.mention})
 
         if not voice_client.is_playing():
-            tocar_proxima(interaction.guild, voice_client)
-            await interaction.followup.send(f"▶️ **Tocando:** {self.nome_musica.value}")
+            # Passamos o canal de texto para poder enviar erros se acontecerem
+            tocar_proxima(interaction.guild, voice_client, interaction.channel)
+            # A mensagem de "Tocando" agora é enviada pela função tocar_proxima
         else:
             pos = len(filas[guild_id])
             await interaction.followup.send(f"📝 **Na fila ({pos}º):** {self.nome_musica.value}")
@@ -110,7 +140,6 @@ class ViewBotaoMusica(View):
 
 @bot.command(name="mplay")
 async def cmd_mplay(ctx):
-    # Envia o botão para abrir o modal
     view = ViewBotaoMusica()
     await ctx.send("Clique abaixo para escolher a música:", view=view)
 
@@ -134,7 +163,11 @@ async def cmd_leave(ctx):
 @bot.event
 async def on_ready():
     print(f"Bot Online: {bot.user}")
+    # Checagem de inicialização
+    if not shutil.which("ffmpeg"):
+        print("⚠️ AVISO: FFmpeg NÃO foi encontrado no sistema. O áudio não funcionará.")
+    else:
+        print("✅ FFmpeg encontrado e pronto para uso.")
 
 if __name__ == "__main__":
     if TOKEN: bot.run(TOKEN)
-            
