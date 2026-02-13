@@ -4,7 +4,7 @@ from discord.ui import View, Button, Modal, TextInput
 import yt_dlp
 import asyncio
 import os
-import shutil
+import imageio_ffmpeg # Importa a biblioteca mágica
 
 # ==============================================================================
 #                         CONFIGURAÇÕES
@@ -13,11 +13,14 @@ TOKEN = os.getenv("TOKEN")
 
 filas = {}
 
-# MUDANÇA: Usando 'scsearch' (SoundCloud) para evitar bloqueio do YouTube
+# Pega o caminho do FFmpeg automaticamente
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+print(f"FFmpeg encontrado em: {FFMPEG_PATH}") # Para confirmar nos logs
+
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
-    'default_search': 'scsearch', 
+    'default_search': 'scsearch', # Mantém SoundCloud para evitar bloqueio
     'quiet': True,
     'no_warnings': True,
 }
@@ -42,13 +45,7 @@ async def tocar_proxima(guild, voice_client, text_channel):
     proxima_musica = filas[guild_id].pop(0)
     busca = proxima_musica['busca']
     
-    # Verifica FFmpeg antes de tentar baixar
-    if not shutil.which("ffmpeg"):
-        await text_channel.send("⚠️ **ERRO CRÍTICO:** O arquivo `nixpacks.toml` não foi criado ou o Railway não o leu. O bot não pode tocar sem FFmpeg.")
-        return
-
     try:
-        # Extrai link do SoundCloud
         with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
             info = ydl.extract_info(busca, download=False)
             if 'entries' in info:
@@ -56,17 +53,18 @@ async def tocar_proxima(guild, voice_client, text_channel):
             url = info['url']
             titulo = info['title']
 
-        source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
+        # AQUI ESTÁ O SEGREDO: Usamos o caminho exato do FFmpeg baixado
+        source = discord.FFmpegPCMAudio(url, executable=FFMPEG_PATH, **FFMPEG_OPTIONS)
         
         def after_playing(error):
             asyncio.run_coroutine_threadsafe(next_song(guild, voice_client, text_channel), bot.loop)
 
         voice_client.play(source, after=after_playing)
-        await text_channel.send(f"🎶 **Tocando (SoundCloud):** {titulo}")
+        await text_channel.send(f"🎶 **Tocando:** {titulo}")
 
     except Exception as e:
         print(f"Erro: {e}")
-        await text_channel.send(f"❌ Erro ao tocar: `{e}`")
+        await text_channel.send(f"❌ Erro: `{e}`")
         await next_song(guild, voice_client, text_channel)
 
 async def next_song(guild, voice_client, text_channel):
@@ -107,10 +105,6 @@ class ViewBotaoMusica(View):
     async def abrir_modal(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(ModalMusica())
 
-# ==============================================================================
-#                         COMANDOS (.)
-# ==============================================================================
-
 @bot.command(name="mplay")
 async def cmd_mplay(ctx):
     await ctx.send("Clique para pedir:", view=ViewBotaoMusica())
@@ -121,15 +115,12 @@ async def cmd_skip(ctx):
         ctx.voice_client.stop()
         await ctx.send("⏭️ Pulei!")
 
-# COMANDO LEAVE RESTAURADO
 @bot.command(name="leave")
 async def cmd_leave(ctx):
     if ctx.voice_client:
         filas[ctx.guild.id] = []
         await ctx.voice_client.disconnect()
-        await ctx.send("👋 Saí da call.")
-    else:
-        await ctx.send("❌ Não estou conectado.")
+        await ctx.send("👋 Saí.")
 
 @bot.event
 async def on_ready():
