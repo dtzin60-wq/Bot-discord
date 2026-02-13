@@ -13,22 +13,15 @@ TOKEN = os.getenv("TOKEN")
 
 filas = {}
 
-# MUDANÇA CRUCIAL: 'default_search': 'scsearch' (Busca no SoundCloud)
-# Isso evita o bloqueio "Sign in" do YouTube.
+# MUDANÇA: Usando 'scsearch' (SoundCloud) para evitar bloqueio do YouTube
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'default_search': 'scsearch', 
     'quiet': True,
     'no_warnings': True,
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '192',
-    }],
 }
 
-# Opções para garantir que o áudio não trave
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn'
@@ -46,44 +39,34 @@ async def tocar_proxima(guild, voice_client, text_channel):
     if not filas.get(guild_id):
         return
 
-    # Pega a música da fila
     proxima_musica = filas[guild_id].pop(0)
     busca = proxima_musica['busca']
     
-    # Função para extrair o link do áudio
-    def extrair_url():
-        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-            try:
-                # Tenta buscar. Se for link do YT, ele usa YT. Se for nome, usa SoundCloud.
-                info = ydl.extract_info(busca, download=False)
-                if 'entries' in info:
-                    info = info['entries'][0]
-                return info['url'], info['title']
-            except Exception as e:
-                raise e
+    # Verifica FFmpeg antes de tentar baixar
+    if not shutil.which("ffmpeg"):
+        await text_channel.send("⚠️ **ERRO CRÍTICO:** O arquivo `nixpacks.toml` não foi criado ou o Railway não o leu. O bot não pode tocar sem FFmpeg.")
+        return
 
     try:
-        url_audio, titulo = extrair_url()
-        
-        # Verificação silenciosa do FFmpeg (Obrigatório, mas automático no Railway)
-        if not shutil.which("ffmpeg"):
-            await text_channel.send("⚠️ **Erro de Configuração:** O FFmpeg não foi detectado. Verifique o arquivo `nixpacks.toml`.")
-            return
+        # Extrai link do SoundCloud
+        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+            info = ydl.extract_info(busca, download=False)
+            if 'entries' in info:
+                info = info['entries'][0]
+            url = info['url']
+            titulo = info['title']
 
-        source = discord.FFmpegPCMAudio(url_audio, **FFMPEG_OPTIONS)
+        source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
         
         def after_playing(error):
-            # Chama a próxima música quando acabar
-            fut = asyncio.run_coroutine_threadsafe(next_song(guild, voice_client, text_channel), bot.loop)
-            try: fut.result()
-            except: pass
+            asyncio.run_coroutine_threadsafe(next_song(guild, voice_client, text_channel), bot.loop)
 
         voice_client.play(source, after=after_playing)
-        await text_channel.send(f"🎶 **Tocando Agora:** {titulo}")
+        await text_channel.send(f"🎶 **Tocando (SoundCloud):** {titulo}")
 
     except Exception as e:
         print(f"Erro: {e}")
-        await text_channel.send(f"❌ Não consegui tocar essa música. Tente outro nome.\nErro: `{e}`")
+        await text_channel.send(f"❌ Erro ao tocar: `{e}`")
         await next_song(guild, voice_client, text_channel)
 
 async def next_song(guild, voice_client, text_channel):
@@ -94,7 +77,7 @@ async def next_song(guild, voice_client, text_channel):
 # ==============================================================================
 
 class ModalMusica(Modal, title="Player de Música"):
-    nome_musica = TextInput(label="Nome da Música", placeholder="Digite o nome da música...", required=True)
+    nome_musica = TextInput(label="Nome da Música", placeholder="Digite o nome...", required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user.voice:
@@ -105,23 +88,18 @@ class ModalMusica(Modal, title="Player de Música"):
         channel = interaction.user.voice.channel
         voice_client = interaction.guild.voice_client
 
-        # Conecta na call
         if not voice_client:
             voice_client = await channel.connect()
         elif voice_client.channel != channel:
             await voice_client.move_to(channel)
 
-        # Adiciona na fila
-        if interaction.guild.id not in filas: 
-            filas[interaction.guild.id] = []
-
+        if interaction.guild.id not in filas: filas[interaction.guild.id] = []
         filas[interaction.guild.id].append({'busca': self.nome_musica.value})
 
-        # Se não estiver tocando, toca agora
         if not voice_client.is_playing():
             await tocar_proxima(interaction.guild, voice_client, interaction.channel)
         else:
-            await interaction.followup.send(f"📝 **Adicionado à fila:** {self.nome_musica.value}")
+            await interaction.followup.send(f"📝 **Na fila:** {self.nome_musica.value}")
 
 class ViewBotaoMusica(View):
     def __init__(self): super().__init__(timeout=None)
@@ -130,25 +108,28 @@ class ViewBotaoMusica(View):
         await interaction.response.send_modal(ModalMusica())
 
 # ==============================================================================
-#                         COMANDOS
+#                         COMANDOS (.)
 # ==============================================================================
 
 @bot.command(name="mplay")
 async def cmd_mplay(ctx):
-    await ctx.send("Clique para pedir música:", view=ViewBotaoMusica())
+    await ctx.send("Clique para pedir:", view=ViewBotaoMusica())
 
 @bot.command(name="skip")
 async def cmd_skip(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
-        await ctx.send("⏭️ Pulada!")
+        await ctx.send("⏭️ Pulei!")
 
+# COMANDO LEAVE RESTAURADO
 @bot.command(name="leave")
 async def cmd_leave(ctx):
     if ctx.voice_client:
         filas[ctx.guild.id] = []
         await ctx.voice_client.disconnect()
-        await ctx.send("👋 Saí.")
+        await ctx.send("👋 Saí da call.")
+    else:
+        await ctx.send("❌ Não estou conectado.")
 
 @bot.event
 async def on_ready():
@@ -156,4 +137,4 @@ async def on_ready():
 
 if __name__ == "__main__":
     if TOKEN: bot.run(TOKEN)
-                    
+    
