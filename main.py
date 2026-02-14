@@ -31,9 +31,10 @@ class TicketControlView(discord.ui.View):
 
     @discord.ui.button(label="Finalizar ticket", style=discord.ButtonStyle.success, emoji="✅", custom_id="btn_finalizar")
     async def finalizar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Verifica permissão
         roles = interaction.user.roles
         cargo_finalizar = configuracao["cargos"]["finalizar"]
+        
+        # Verifica permissão (Dono, Admin ou Cargo configurado)
         e_staff = interaction.user.id == DONO_ID or interaction.user.guild_permissions.administrator or (cargo_finalizar in roles if cargo_finalizar else False)
 
         if e_staff:
@@ -57,31 +58,14 @@ class TicketControlView(discord.ui.View):
         await interaction.channel.remove_user(interaction.user)
         await interaction.response.send_message("👋 Você saiu do ticket.", ephemeral=True)
 
-# --- MENU DE SELEÇÃO (IDENTICO À IMAGEM) ---
+# --- MENU DE SELEÇÃO ---
 class TicketDropdown(discord.ui.Select):
     def __init__(self):
-        # Descrições exatas da imagem enviada
         options = [
-            discord.SelectOption(
-                label="Suporte", 
-                emoji="🛠️", 
-                description="Clique aqui caso precisa de algum suporte"
-            ),
-            discord.SelectOption(
-                label="Reembolso", 
-                emoji="💰", 
-                description="Clique aqui caso deseja fazer um reembolso"
-            ),
-            discord.SelectOption(
-                label="Receber Evento", 
-                emoji="💫", 
-                description="Clique aqui caso queira receber algum evento"
-            ),
-            discord.SelectOption(
-                label="Vagas de Mediador", 
-                emoji="👑", 
-                description="Clique aqui caso queira alguma vaga de mediador na ORG"
-            ),
+            discord.SelectOption(label="Suporte", emoji="🛠️", description="Clique aqui caso precisa de algum suporte"),
+            discord.SelectOption(label="Reembolso", emoji="💰", description="Clique aqui caso deseja fazer um reembolso"),
+            discord.SelectOption(label="Receber Evento", emoji="💫", description="Clique aqui caso queira receber algum evento"),
+            discord.SelectOption(label="Vagas de Mediador", emoji="👑", description="Clique aqui caso queira alguma vaga de mediador na ORG"),
         ]
         super().__init__(placeholder="Selecione uma função", options=options, custom_id="main_select")
 
@@ -89,13 +73,12 @@ class TicketDropdown(discord.ui.Select):
         escolha = self.values[0]
         canal_destino = configuracao["canais"].get(escolha)
 
-        # Verifica se o dono configurou os canais
         if not canal_destino:
-            await interaction.response.send_message(f"❌ O canal para **{escolha}** ainda não foi configurado pelo dono. Use /configurar_topicos", ephemeral=True)
+            await interaction.response.send_message(f"❌ O canal para **{escolha}** ainda não foi configurado. Use /configurar_topicos", ephemeral=True)
             return
 
         try:
-            # CRIA O TÓPICO DIRETO (Sem confirmação)
+            # CRIAÇÃO IMEDIATA DO TÓPICO
             thread = await canal_destino.create_thread(
                 name=f"{escolha}-{interaction.user.name}",
                 type=discord.ChannelType.private_thread,
@@ -104,23 +87,19 @@ class TicketDropdown(discord.ui.Select):
             
             await thread.add_user(interaction.user)
             
-            # Botão para ir ao ticket
             view_jump = discord.ui.View()
             view_jump.add_item(discord.ui.Button(label="Ir para o Ticket", url=thread.jump_url, emoji="🔗"))
             
-            await interaction.response.send_message(content=f"✅ Seu ticket de **{escolha}** foi criado!", view=view_jump, ephemeral=True)
+            await interaction.response.send_message(content=f"✅ Seu ticket foi aberto!", view=view_jump, ephemeral=True)
 
-            # Mensagem DENTRO do Ticket (Igual Foto 2)
+            # Mensagem interna do Ticket
             embed = discord.Embed(
                 description="Seja bem-vindo(a) ao painel de atendimento. Informamos que, dependendo do horário em que este ticket foi aberto, o tempo de resposta pode variar.",
                 color=discord.Color.dark_grey()
             )
             agora = datetime.datetime.now()
-            embed.add_field(name="Horário de Abertura:", value=f"<t:{int(agora.timestamp())}:F> (há poucos segundos)")
+            embed.add_field(name="Horário de Abertura:", value=f"<t:{int(agora.timestamp())}:F>")
             
-            # Tenta pegar link da logo se tiver
-            # embed.set_thumbnail(url="LINK_DA_LOGO")
-
             mencao = f"{interaction.user.mention}"
             if configuracao["cargos"]["ver"]: mencao += f" {configuracao['cargos']['ver'].mention}"
 
@@ -139,47 +118,40 @@ async def on_ready():
     print(f"✅ Bot Online: {bot.user}")
     await bot.tree.sync()
 
-# --- COMANDO 1: CONFIGURAR CANAIS (Obrigatório usar primeiro) ---
+# --- COMANDO 1: CONFIGURAÇÃO DE CANAIS ---
 @bot.tree.command(name="configurar_topicos", description="🎟️ Define onde cada ticket será criado")
-@app_commands.describe(
-    canal_suporte="Canal para tickets de Suporte",
-    canal_reembolso="Canal para tickets de Reembolso",
-    canal_evento="Canal para tickets de Evento",
-    canal_vagas="Canal para tickets de Vagas"
-)
-async def configurar_topicos(
-    interaction: discord.Interaction, 
-    canal_suporte: discord.TextChannel,
-    canal_reembolso: discord.TextChannel,
-    canal_evento: discord.TextChannel,
-    canal_vagas: discord.TextChannel
-):
-    if interaction.user.id != DONO_ID:
-        return await interaction.response.send_message("❌ Apenas o dono!", ephemeral=True)
+async def configurar_topicos(interaction: discord.Interaction, canal_suporte: discord.TextChannel, canal_reembolso: discord.TextChannel, canal_evento: discord.TextChannel, canal_vagas: discord.TextChannel):
+    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono!", ephemeral=True)
+    configuracao["canais"].update({"Suporte": canal_suporte, "Reembolso": canal_reembolso, "Receber Evento": canal_evento, "Vagas de Mediador": canal_vagas})
+    await interaction.response.send_message("✅ Canais configurados!", ephemeral=True)
 
-    configuracao["canais"]["Suporte"] = canal_suporte
-    configuracao["canais"]["Reembolso"] = canal_reembolso
-    configuracao["canais"]["Receber Evento"] = canal_evento
-    configuracao["canais"]["Vagas de Mediador"] = canal_vagas
-
-    await interaction.response.send_message("✅ Canais configurados com sucesso! Agora pode criar o painel.", ephemeral=True)
-
-# --- COMANDO 2: CRIAR O PAINEL ---
-@bot.tree.command(name="criar_painel", description="💸 Envia o painel de tickets")
+# --- COMANDO 2: CRIAR PAINEL ---
+@bot.tree.command(name="criar_painel", description="💸 Envia o painel WS TICKET")
 async def criar_painel(interaction: discord.Interaction, cargo_ver: discord.Role, cargo_finalizar: discord.Role):
-    if interaction.user.id != DONO_ID:
-        return await interaction.response.send_message("❌ Apenas o dono!", ephemeral=True)
-    
-    configuracao["cargos"]["ver"] = cargo_ver
-    configuracao["cargos"]["finalizar"] = cargo_finalizar
+    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono!", ephemeral=True)
+    configuracao["cargos"]["ver"], configuracao["cargos"]["finalizar"] = cargo_ver, cargo_finalizar
 
-    embed = discord.Embed(title="SPACE TICKET", description="👉 Abra ticket com o que você precisa abaixo com as informações de guia.", color=discord.Color.from_rgb(20, 20, 20))
-    # Coloque o link da imagem do astronauta aqui
-    embed.set_image(url="https://i.imgur.com/SEU_LINK_AQUI.png") 
+    # TEXTO DA IMAGEM
+    descricao = (
+        "👉 Abra ticket com o que você precisa abaixo com as informações de guia.\n\n"
+        "☞ **TICKET SUPORTE**\n"
+        "tire suas dúvidas aqui no ticket suporte, fale com nossos suportes e seja direto com o seu problema.\n\n"
+        "☞ **TICKET REEMBOLSO**\n"
+        "receba seu reembolso aqui, seja direto e mande comprovante do pagamento.\n\n"
+        "☞ **TICKET RECEBE EVENTO**\n"
+        "Receba seu evento completos, espera nossos suportes válida seu evento.\n\n"
+        "☞ **TICKET VAGA MEDIADOR**\n"
+        "seja mediador da org SPACE, abra ticket e espera nossos suportes recruta.\n\n"
+        "→ Evite discussões!"
+    )
+
+    embed = discord.Embed(title="WS TICKET", description=descricao, color=discord.Color.from_rgb(10, 10, 10))
+    
+    # SUA NOVA IMAGEM AQUI
+    embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg?ex=6990bea7&is=698f6d27&hm=ab8e0065381fdebb51ecddda1fe599a7366aa8dfe622cfeb7f720b7fadedd896&") 
     
     await interaction.channel.send(embed=embed, view=MainView())
-    await interaction.response.send_message("✅ Painel enviado!", ephemeral=True)
+    await interaction.response.send_message("✅ Painel WS TICKET enviado!", ephemeral=True)
 
-if TOKEN:
-    bot.run(TOKEN)
-                                  
+if TOKEN: bot.run(TOKEN)
+    
