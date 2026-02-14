@@ -365,9 +365,8 @@ async def on_message(message):
 
 @bot.event
 async def on_ready():
-        await bot.tree.sync()
+    await bot.tree.sync()
     print(f"✅ Bot Online: {bot.user}")
 
 if TOKEN: 
     bot.run(TOKEN)
-        
