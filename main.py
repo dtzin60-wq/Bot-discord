@@ -3,6 +3,7 @@ import os
 import asyncio
 import datetime
 import traceback
+import random
 from discord.ext import commands
 from discord import app_commands
 
@@ -14,300 +15,245 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ==============================================================================
-# SISTEMA DE MEMÓRIA (SALVA DADOS ENQUANTO O BOT TÁ LIGADO)
-# ==============================================================================
+# --- CONFIGURAÇÃO ---
 configuracao = {
     "cargos": {"ver": [], "finalizar": []},
-    "canais": {"Suporte": None, "Reembolso": None, "Receber Evento": None, "Vagas de Mediador": None, "Filas": None},
-    "loja": {}, # Guarda produtos: {"Nome": {"valor": 10, "desc": "..."}}
-    "usuarios": {} # Guarda saldo: {user_id: {"coins": 0, "vitorias": 0}}
+    # CANAIS SEPARADOS:
+    # 'Geral' guarda os canais fixos do painel principal (Suporte, Reembolso...)
+    # 'Filas' guarda a lista de até 3 canais para as apostas (Sorteio)
+    "canais": {
+        "Suporte": None, 
+        "Reembolso": None, 
+        "Evento": None, 
+        "Vagas": None,
+        "Filas": [] 
+    }
 }
 tickets_abertos = []
 
-# Funções auxiliares de Economia
-def get_user_data(user_id):
-    if user_id not in configuracao["usuarios"]:
-        configuracao["usuarios"][user_id] = {"coins": 0, "vitorias": 0}
-    return configuracao["usuarios"][user_id]
-
-def add_coins(user_id, amount):
-    data = get_user_data(user_id)
-    data["coins"] += amount
-
-def add_wins(user_id, amount):
-    data = get_user_data(user_id)
-    data["vitorias"] += amount
-
 # ==============================================================================
-# SISTEMA DE MODALS E VIEWS (TICKETS & STAFF)
+# SISTEMA 1: LOBBY DE APOSTAS (FILAS)
 # ==============================================================================
-# (Mesmo código de antes, resumido para caber tudo)
 
-class RenomearModal(discord.ui.Modal, title="Renomear Ticket"):
-    novo_nome = discord.ui.TextInput(label="Novo Nome", placeholder="Ex: atendimento-finalizado")
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.channel.edit(name=self.novo_nome.value)
-        await interaction.response.send_message(f"✅ Renomeado para **{self.novo_nome.value}**", ephemeral=True)
+class FilaLobbyView(discord.ui.View):
+    def __init__(self, limite: int, modo: str, valor: str):
+        super().__init__(timeout=None)
+        self.limite = limite
+        self.modo = modo
+        self.valor = valor
+        self.jogadores = []
+        self.nomes = []
+        self.configurar_botoes()
 
-class AdicionarMembroModal(discord.ui.Modal, title="Adicionar Membro"):
-    user_id = discord.ui.TextInput(label="ID do Usuário")
+    def configurar_botoes(self):
+        self.clear_items()
+        # Botões Cinzas (Secondary)
+        if self.limite == 2: # 1v1
+            self.add_item(discord.ui.Button(label="Gel Normal", style=discord.ButtonStyle.secondary, custom_id=f"join_n_{self.modo}"))
+            self.add_item(discord.ui.Button(label="Gel Infinito", style=discord.ButtonStyle.secondary, custom_id=f"join_i_{self.modo}"))
+        else: # 2v2+
+            self.add_item(discord.ui.Button(label="Entrar na Fila", style=discord.ButtonStyle.secondary, custom_id=f"join_g_{self.modo}"))
+        
+        # Botão Vermelho (Danger)
+        self.add_item(discord.ui.Button(label="Sair da Fila", style=discord.ButtonStyle.danger, custom_id=f"leave_f_{self.modo}"))
+
+    async def atualizar_embed(self, interaction):
+        lista = "\n".join([f"👤 {n}" for n in self.nomes]) if self.nomes else "Nenhum jogador na fila"
+        embed = interaction.message.embeds[0]
+        # Atualiza campo de Jogadores (Índice 2)
+        embed.set_field_at(2, name="👥 | Jogadores", value=f"{lista}\n\n**Status:** {len(self.jogadores)}/{self.limite}", inline=False)
+        await interaction.message.edit(embed=embed, view=self)
+
+    async def iniciar_partida(self, interaction):
+        # --- LÓGICA ALEATÓRIA (SÓ PARA FILAS) ---
+        canais_filas = configuracao["canais"].get("Filas", [])
+        
+        if not canais_filas:
+            # Se esqueceu de configurar, usa o atual
+            canal_destino = interaction.channel
+        else:
+            # Sorteia 1 dos 3 canais configurados
+            canal_destino = random.choice(canais_filas)
+        
+        await interaction.channel.send(f"✅ **Fila Cheia!** Abrindo ticket em {canal_destino.mention}...", delete_after=5)
+        
+        thread = await canal_destino.create_thread(
+            name=f"MATCH-{self.modo}-{len(tickets_abertos)+1}", 
+            type=discord.ChannelType.private_thread
+        )
+        
+        mencoes = ""
+        for uid in self.jogadores:
+            u = interaction.guild.get_member(uid)
+            if u:
+                await thread.add_user(u)
+                mencoes += f"{u.mention} "
+                tickets_abertos.append(uid)
+        
+        # Marca a Staff
+        for c in configuracao["cargos"]["ver"]: mencoes += f"{c.mention} "
+
+        embed_match = discord.Embed(
+            title="🔥 PARTIDA ENCONTRADA", 
+            description=f"**Modo:** {self.modo}\n**Valor:** {self.valor}\n\n👉 Enviem os PIX e comprovantes aqui.\nO Mediador irá validar em breve.", 
+            color=discord.Color.green()
+        )
+        await thread.send(content=mencoes, embed=embed_match, view=MatchControlView())
+        
+        # Limpa visualmente para a próxima
+        self.jogadores = []
+        self.nomes = []
+        await self.atualizar_embed(interaction)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        cid = interaction.data["custom_id"]
+        
+        # SAIR
+        if "leave_f" in cid:
+            if interaction.user.id in self.jogadores:
+                idx = self.jogadores.index(interaction.user.id)
+                self.jogadores.pop(idx); self.nomes.pop(idx)
+                await interaction.response.defer(); await self.atualizar_embed(interaction)
+            else:
+                await interaction.response.send_message("❌ Você não está na fila.", ephemeral=True)
+            return True
+
+        # ENTRAR
+        if interaction.user.id in self.jogadores:
+            return await interaction.response.send_message("❌ Já está na fila!", ephemeral=True)
+        if len(self.jogadores) >= self.limite:
+            return await interaction.response.send_message("❌ Fila cheia!", ephemeral=True)
+
+        self.jogadores.append(interaction.user.id)
+        self.nomes.append(interaction.user.display_name)
+        await interaction.response.defer(); await self.atualizar_embed(interaction)
+        
+        if len(self.jogadores) >= self.limite: await self.iniciar_partida(interaction)
+        return True
+
+class CriarFilaModal(discord.ui.Modal, title="Criar Fila Personalizada"):
+    nome = discord.ui.TextInput(label="Nome da Fila", placeholder="Ex: 1v1 | Emulador")
+    valor = discord.ui.TextInput(label="Valor", placeholder="Ex: R$ 5,00")
+    limite = discord.ui.TextInput(label="Jogadores (2 ou 4)", placeholder="2", max_length=1)
+
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            user = await interaction.guild.fetch_member(int(self.user_id.value))
-            await interaction.channel.add_user(user)
-            await interaction.response.send_message(f"✅ {user.mention} adicionado.", ephemeral=True)
-        except: await interaction.response.send_message("❌ ID inválido.", ephemeral=True)
-
-class RemoverMembroModal(discord.ui.Modal, title="Remover Membro"):
-    user_id = discord.ui.TextInput(label="ID do Usuário")
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            user = await interaction.guild.fetch_member(int(self.user_id.value))
-            await interaction.channel.remove_user(user)
-            await interaction.response.send_message(f"👋 {user.mention} removido.", ephemeral=True)
-        except: await interaction.response.send_message("❌ ID inválido.", ephemeral=True)
-
-class StaffActionsDropdown(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="Renomear Ticket", emoji="📝"),
-            discord.SelectOption(label="Notificar Membro", emoji="🔔"),
-            discord.SelectOption(label="Adicionar Usuário", emoji="👤"),
-            discord.SelectOption(label="Remover Usuário", emoji="🚫"),
-        ]
-        super().__init__(placeholder="Selecione uma ação", options=options)
-    async def callback(self, interaction: discord.Interaction):
-        if self.values[0] == "Renomear Ticket": await interaction.response.send_modal(RenomearModal())
-        elif self.values[0] == "Notificar Membro": 
-            await interaction.channel.send(f"🔔 **ATENÇÃO:** {interaction.user.mention} está aguardando! @here")
-            await interaction.response.send_message("✅ Notificado.", ephemeral=True)
-        elif self.values[0] == "Adicionar Usuário": await interaction.response.send_modal(AdicionarMembroModal())
-        elif self.values[0] == "Remover Usuário": await interaction.response.send_modal(RemoverMembroModal())
-
-class StaffActionsView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        self.add_item(StaffActionsDropdown())
-
-class TicketControlView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None)
-    @discord.ui.button(label="Finalizar ticket", style=discord.ButtonStyle.success, emoji="✅", custom_id="btn_fin")
-    async def fin(self, interaction, button):
-        user = interaction.user
-        e_staff = user.id == DONO_ID or user.guild_permissions.administrator
-        if not e_staff:
-            cargos = configuracao["cargos"].get("finalizar", [])
-            if any(c in user.roles for c in cargos): e_staff = True
-        if e_staff:
-            await interaction.response.send_message("🚨 **Fechando...**", ephemeral=True)
-            await asyncio.sleep(5)
-            await interaction.channel.delete()
-        else: await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
-
-    @discord.ui.button(label="Assumir Ticket", style=discord.ButtonStyle.secondary, emoji="🛡️", custom_id="btn_ass")
-    async def ass(self, interaction, button):
-        await interaction.channel.send(f"🛡️ {interaction.user.mention} assumiu!")
-        await interaction.response.send_message("Assumido!", ephemeral=True)
-
-    @discord.ui.button(label="Painel Staff", style=discord.ButtonStyle.secondary, emoji="🛠️", custom_id="btn_stf")
-    async def stf(self, interaction, button):
-        if interaction.user.guild_permissions.manage_messages or interaction.user.id == DONO_ID:
-            await interaction.response.send_message("🔧 **Painel Staff:**", view=StaffActionsView(), ephemeral=True)
-        else: await interaction.response.send_message("❌ Apenas staff.", ephemeral=True)
-
-    @discord.ui.button(label="Sair Ticket", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="btn_sai")
-    async def sai(self, interaction, button):
-        try:
-            if interaction.user.id in tickets_abertos: tickets_abertos.remove(interaction.user.id)
-            await interaction.channel.remove_user(interaction.user)
+            lim = int(self.limite.value)
+            if lim < 2: return await interaction.response.send_message("Mínimo 2.", ephemeral=True)
+            
+            await interaction.response.defer(ephemeral=True)
+            embed = discord.Embed(title=f"{self.nome.value} | WS APOSTAS", color=discord.Color.blue())
+            embed.add_field(name="👑 | Modo", value=self.nome.value, inline=False)
+            embed.add_field(name="💸 | Valor", value=self.valor.value, inline=False)
+            embed.add_field(name="👥 | Jogadores", value="Nenhum jogador na fila", inline=False)
+            embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
+            
+            view = FilaLobbyView(lim, self.nome.value, self.valor.value)
+            await interaction.channel.send(embed=embed, view=view)
+            await interaction.followup.send("✅ Fila criada!", ephemeral=True)
         except: pass
+
+# ==============================================================================
+# SISTEMA 2: TICKET GERAL (PAINEL PRINCIPAL)
+# ==============================================================================
 
 class TicketDropdown(discord.ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(label="Suporte", emoji="🛠️"),
             discord.SelectOption(label="Reembolso", emoji="💰"),
-            discord.SelectOption(label="Receber Evento", emoji="💫"),
-            discord.SelectOption(label="Vagas de Mediador", emoji="👑"),
+            discord.SelectOption(label="Evento", emoji="💫"),
+            discord.SelectOption(label="Vagas", emoji="👑")
         ]
-        super().__init__(placeholder="Selecione uma função", options=options, custom_id="menu_geral")
-    async def callback(self, interaction):
-        user = interaction.user
-        if user.id in tickets_abertos: return await interaction.response.send_message("Você já tem um ticket!", ephemeral=True)
-        escolha = self.values[0]
-        canal = configuracao["canais"].get(escolha)
-        if not canal: return await interaction.response.send_message("⚠️ Canal não configurado.", ephemeral=True)
-        
-        thread = await canal.create_thread(name=f"{escolha}-{user.name}", type=discord.ChannelType.private_thread)
-        tickets_abertos.append(user.id)
-        await thread.add_user(user)
-        await asyncio.sleep(1)
-        try: 
-            async for m in thread.history(limit=5): 
-                if m.is_system(): await m.delete()
-        except: pass
+        super().__init__(placeholder="Selecione", options=options, custom_id="main_drop")
 
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="Ir para o Ticket", url=thread.jump_url, emoji="🔗"))
-        await interaction.response.send_message("✅ Ticket aberto!", view=view, ephemeral=True)
+    async def callback(self, i):
+        # Mapeamento do nome da opção para a chave no dicionário de canais
+        mapa = {"Suporte": "Suporte", "Reembolso": "Reembolso", "Evento": "Evento", "Vagas": "Vagas"}
+        chave = mapa[self.values[0]]
         
-        embed = discord.Embed(description="Seja bem-vindo(a).", color=discord.Color.dark_grey())
-        embed.add_field(name="Horário:", value=f"<t:{int(datetime.datetime.now().timestamp())}:F>")
-        mencao = f"{user.mention}"
-        for c in configuracao["cargos"].get("ver", []): mencao += f" {c.mention}"
-        for c in configuracao["cargos"].get("finalizar", []): 
-             if c not in configuracao["cargos"].get("ver", []): mencao += f" {c.mention}"
-        await thread.send(content=mencao, embed=embed, view=TicketControlView())
+        # Pega o canal fixo configurado
+        canal = configuracao["canais"].get(chave)
+        
+        if not canal:
+            return await i.response.send_message(f"⚠️ Canal de **{self.values[0]}** não configurado!", ephemeral=True)
+            
+        th = await canal.create_thread(name=f"{self.values[0]}-{i.user.name}", type=discord.ChannelType.private_thread)
+        await th.add_user(i.user)
+        tickets_abertos.append(i.user.id)
+        
+        await i.response.send_message(f"✅ Ticket aberto! <#{th.id}>", ephemeral=True)
+        
+        embed = discord.Embed(description="Aguarde o atendimento.", color=discord.Color.dark_grey())
+        mencao = f"{i.user.mention}"
+        for c in configuracao["cargos"]["ver"]: mencao += f" {c.mention}"
+        
+        await th.send(content=mencao, embed=embed, view=TicketControlView())
 
 class MainView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None); self.add_item(TicketDropdown())
 
 # ==============================================================================
-# FILAS DE APOSTAS
+# VIEWS DE CONTROLE (BOTÕES DENTRO DOS TICKETS)
 # ==============================================================================
-class FilaControlView(discord.ui.View):
+
+class MatchControlView(discord.ui.View): # Para as filas de aposta
     def __init__(self): super().__init__(timeout=None)
-    @discord.ui.button(label="Validar Pagamento", style=discord.ButtonStyle.success, emoji="💸", custom_id="btn_val_pag")
-    async def val(self, interaction, button):
-        if interaction.user.guild_permissions.manage_messages or interaction.user.id == DONO_ID:
-            await interaction.response.send_message(f"✅ **Validado por {interaction.user.mention}!**", ephemeral=False)
-        else: await interaction.response.send_message("❌ Apenas staff.", ephemeral=True)
-    @discord.ui.button(label="Fechar Fila", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="btn_fec_fil")
-    async def fec(self, interaction, button):
-        if interaction.user.guild_permissions.manage_messages:
-            await interaction.response.send_message("🚨 **Fechando...**", ephemeral=True)
-            await asyncio.sleep(5); await interaction.channel.delete()
+    @discord.ui.button(label="Validar Pagamento", style=discord.ButtonStyle.success, emoji="💸", custom_id="btn_val")
+    async def v(self, i, b):
+        if i.user.id == DONO_ID or i.user.guild_permissions.manage_messages:
+            await i.response.send_message(f"✅ Validado por {i.user.mention}!", ephemeral=False)
+    @discord.ui.button(label="Fechar", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="btn_cl")
+    async def c(self, i, b):
+        if i.user.guild_permissions.manage_messages: await i.channel.delete()
 
-class FilaBotaoIndividual(discord.ui.Button):
-    def __init__(self, numero, valor):
-        super().__init__(label=f"Fila {numero:02d} • R$ {valor}", style=discord.ButtonStyle.secondary, custom_id=f"fila_{numero}_{valor}")
-        self.valor, self.numero = valor, numero
-    async def callback(self, interaction):
-        user = interaction.user
-        if user.id in tickets_abertos: return await interaction.response.send_message("Finalize seu ticket anterior!", ephemeral=True)
-        canal = configuracao["canais"].get("Filas") or interaction.channel
-        await interaction.response.defer(ephemeral=True)
-        thread = await canal.create_thread(name=f"Fila-{self.numero:02d}-{user.name}", type=discord.ChannelType.private_thread)
-        tickets_abertos.append(user.id); await thread.add_user(user)
-        
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="Ir para a Fila", url=thread.jump_url, emoji="🔗"))
-        await interaction.followup.send(f"✅ Entrou na **Fila {self.numero:02d}**!", view=view, ephemeral=True)
-        embed = discord.Embed(title=f"💰 APOSTA: R$ {self.valor}", description=f"Olá {user.mention}, envie o PIX e comprovante.", color=discord.Color.green())
-        await thread.send(content=user.mention, embed=embed, view=FilaControlView())
-
-class FilaButtonsView(discord.ui.View):
-    def __init__(self, qtd, val):
-        super().__init__(timeout=None)
-        for i in range(1, qtd+1): self.add_item(FilaBotaoIndividual(i, val))
-
-class FilaConfigModal(discord.ui.Modal, title="Criar Filas"):
-    qtd = discord.ui.TextInput(label="Quantidade (Max 15)")
-    val = discord.ui.TextInput(label="Valor (Ex: 100,00)")
-    async def on_submit(self, interaction):
-        try:
-            q = int(self.qtd.value)
-            if q < 1 or q > 15: return await interaction.response.send_message("❌ Max 15.", ephemeral=True)
-            await interaction.response.defer(ephemeral=True)
-            embed = discord.Embed(title=f"FILAS WS - R$ {self.val.value}", description=f"💲 **VALOR:** R$ {self.val.value}\nClique numa fila abaixo.", color=discord.Color.blue())
-            embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
-            await interaction.channel.send(embed=embed, view=FilaButtonsView(q, self.val.value))
-            await interaction.followup.send("✅ Criado!", ephemeral=True)
-        except: pass
+class TicketControlView(discord.ui.View): # Para o suporte geral
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="Finalizar", style=discord.ButtonStyle.success, emoji="✅", custom_id="btn_fin")
+    async def f(self, i, b):
+        if i.user.guild_permissions.manage_messages: await i.channel.delete()
+    @discord.ui.button(label="Sair", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="btn_out")
+    async def s(self, i, b): await i.channel.remove_user(i.user)
 
 # ==============================================================================
-# NOVOS COMANDOS (ECONOMIA E LOJA)
+# COMANDOS DE CONFIGURAÇÃO (SEPARADOS)
 # ==============================================================================
 
-@bot.tree.command(name="darcoin", description="💰 Adiciona Coins a um usuário")
-async def darcoin(interaction: discord.Interaction, usuario: discord.User, quantidade: int):
-    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono.", ephemeral=True)
-    add_coins(usuario.id, quantidade)
-    await interaction.response.send_message(f"✅ **{quantidade} Coins** adicionados para {usuario.mention}!", ephemeral=True)
+@bot.tree.command(name="configurar_tickets_gerais", description="Canais fixos do Painel Principal")
+async def cfg_geral(i: discord.Interaction, suporte: discord.TextChannel, reembolso: discord.TextChannel, evento: discord.TextChannel, vagas: discord.TextChannel):
+    if i.user.id != DONO_ID: return
+    configuracao["canais"].update({"Suporte": suporte, "Reembolso": reembolso, "Evento": evento, "Vagas": vagas})
+    await i.response.send_message("✅ Canais do Painel Principal configurados!", ephemeral=True)
 
-@bot.tree.command(name="darvitoria", description="🏆 Adiciona Vitórias a um usuário")
-async def darvitoria(interaction: discord.Interaction, usuario: discord.User, quantidade: int):
-    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono.", ephemeral=True)
-    add_wins(usuario.id, quantidade)
-    await interaction.response.send_message(f"✅ **{quantidade} Vitórias** adicionadas para {usuario.mention}!", ephemeral=True)
-
-@bot.tree.command(name="perfil", description="👤 Vê seu saldo e vitórias")
-async def perfil(interaction: discord.Interaction, usuario: discord.User = None):
-    target = usuario or interaction.user
-    data = get_user_data(target.id)
-    embed = discord.Embed(title=f"Perfil de {target.name}", color=discord.Color.gold())
-    embed.add_field(name="💰 Coins", value=f"{data['coins']}", inline=True)
-    embed.add_field(name="🏆 Vitórias", value=f"{data['vitorias']}", inline=True)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="addproduto", description="🛠️ Adiciona um produto à loja")
-async def addproduto(interaction: discord.Interaction, nome: str, valor: int, descricao: str):
-    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono.", ephemeral=True)
-    configuracao["loja"][nome] = {"valor": valor, "desc": descricao}
-    await interaction.response.send_message(f"✅ Produto **{nome}** (R${valor}) adicionado à loja!", ephemeral=True)
-
-@bot.tree.command(name="criarloja", description="🏪 Exibe a loja de produtos")
-async def criarloja(interaction: discord.Interaction):
-    if not configuracao["loja"]: return await interaction.response.send_message("❌ A loja está vazia. Use /addproduto.", ephemeral=True)
+@bot.tree.command(name="configurar_canais_filas", description="Escolha 3 canais aleatórios para as Apostas")
+async def cfg_filas(i: discord.Interaction, canal_1: discord.TextChannel, canal_2: discord.TextChannel = None, canal_3: discord.TextChannel = None):
+    if i.user.id != DONO_ID: return
     
-    embed = discord.Embed(title="🛒 LOJA WS", description="Confira nossos produtos disponíveis:", color=discord.Color.purple())
-    for nome, dados in configuracao["loja"].items():
-        embed.add_field(name=f"{nome} - R$ {dados['valor']}", value=dados['desc'], inline=False)
+    lista = [canal_1]
+    if canal_2: lista.append(canal_2)
+    if canal_3: lista.append(canal_3)
     
-    embed.set_footer(text="Para comprar, abra um ticket de suporte.")
-    await interaction.channel.send(embed=embed)
-    await interaction.response.send_message("✅ Loja enviada!", ephemeral=True)
-
-@bot.tree.command(name="blacklist", description="🚫 Bane um usuário do bot (Simulação)")
-async def blacklist(interaction: discord.Interaction, usuario: discord.User):
-    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono.", ephemeral=True)
-    await interaction.response.send_message(f"🚫 {usuario.mention} foi adicionado à Blacklist!", ephemeral=True)
-
-@bot.tree.command(name="addemoji", description="🎨 Adiciona um emoji (Simulação)")
-async def addemoji(interaction: discord.Interaction, url: str, nome: str):
-    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono.", ephemeral=True)
-    await interaction.response.send_message(f"✅ Emoji **{nome}** adicionado com sucesso!", ephemeral=True)
+    configuracao["canais"]["Filas"] = lista
+    nomes = ", ".join([c.mention for c in lista])
+    await i.response.send_message(f"✅ **Canais de Aposta (Aleatórios):** {nomes}", ephemeral=True)
 
 # ==============================================================================
-# COMANDOS PRINCIPAIS E EVENTOS
+# OUTROS COMANDOS
 # ==============================================================================
 
-@bot.tree.command(name="configurar_topicos", description="Define canais")
-async def config_top(interaction: discord.Interaction, suporte: discord.TextChannel, reembolso: discord.TextChannel, evento: discord.TextChannel, vagas: discord.TextChannel, filas: discord.TextChannel):
-    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono.", ephemeral=True)
-    configuracao["canais"].update({"Suporte": suporte, "Reembolso": reembolso, "Receber Evento": evento, "Vagas de Mediador": vagas, "Filas": filas})
-    await interaction.response.send_message("✅ Canais salvos!", ephemeral=True)
+@bot.tree.command(name="criarfila", description="Cria Lobby de Apostas")
+async def criarfila(i: discord.Interaction):
+    if i.user.id != DONO_ID: return
+    await i.response.send_modal(CriarFilaModal())
 
-@bot.tree.command(name="criar_painel", description="Cria Painel WS Ticket")
-async def criar_pnl(interaction: discord.Interaction, staff_1: discord.Role, finalizar_1: discord.Role, staff_2: discord.Role = None, staff_3: discord.Role = None, staff_4: discord.Role = None, finalizar_2: discord.Role = None, finalizar_3: discord.Role = None, finalizar_4: discord.Role = None):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.user.id != DONO_ID: return await interaction.followup.send("❌ Apenas o dono.")
-    
-    configuracao["cargos"]["ver"] = [c for c in [staff_1, staff_2, staff_3, staff_4] if c]
-    configuracao["cargos"]["finalizar"] = [c for c in [finalizar_1, finalizar_2, finalizar_3, finalizar_4] if c]
-
-    desc = ("👉 Abra ticket com o que você precisa abaixo com as informações de guia.\n\n"
-            "☞ **TICKET SUPORTE**\n"
-            "tire suas dúvidas aqui no ticket suporte, fale com nossos suportes e seja direto com o seu problema.\n\n"
-            "☞ **TICKET REEMBOLSO**\n"
-            "receba seu reembolso aqui, seja direto e mande comprovante do pagamento.\n\n"
-            "☞ **TICKET RECEBE EVENTO**\n"
-            "Receba seu evento completos, espera nossos suportes válida seu evento.\n\n"
-            "☞ **TICKET VAGA MEDIADOR**\n"
-            "seja mediador da org WS, abra ticket e espera nossos suportes recruta.\n\n"
-            "→ Evite discussões!")
-    
-    embed = discord.Embed(title="WS TICKET", description=desc, color=discord.Color.blue())
+@bot.tree.command(name="criar_painel", description="Painel WS TICKET Principal")
+async def criar_painel(i: discord.Interaction, staff_role: discord.Role):
+    if i.user.id != DONO_ID: return
+    configuracao["cargos"]["ver"] = [staff_role]
+    embed = discord.Embed(title="WS TICKET", description="Abra seu ticket.", color=discord.Color.blue())
     embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
-    await interaction.channel.send(embed=embed, view=MainView())
-    await interaction.followup.send("✅ Painel enviado!", ephemeral=True)
-
-@bot.tree.command(name="criar_filas", description="Cria Painel de Filas")
-async def criar_fls(interaction: discord.Interaction):
-    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono.", ephemeral=True)
-    await interaction.response.send_modal(FilaConfigModal())
+    await i.channel.send(embed=embed, view=MainView())
+    await i.response.send_message("✅", ephemeral=True)
 
 @bot.event
 async def on_message(message):
@@ -318,10 +264,8 @@ async def on_message(message):
 
 @bot.event
 async def on_ready():
-    print(f"✅ Bot WS Online: {bot.user}")
-    bot.add_view(MainView())
-    bot.add_view(TicketControlView())
     await bot.tree.sync()
+    print(f"✅ Bot Online: {bot.user}")
 
 if TOKEN: bot.run(TOKEN)
-    
+            
