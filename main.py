@@ -21,7 +21,7 @@ configuracao = {
     "canais": {"Filas": []}, 
     "contador_salas": 0,
     "cargo_mediador_id": None,
-    "dados_mediadores": {} # {user_id: {"nome": "...", "chave": "...", "qrcode": "..."}}
+    "dados_mediadores": {} 
 }
 tickets_abertos = []
 mediadores_ativos = []
@@ -46,7 +46,7 @@ class PainelPagamentoView(discord.ui.View):
         if interaction.user.guild_permissions.manage_messages or interaction.user.id == DONO_ID or perm_med:
             await interaction.response.send_message(f"✅ **Pagamento Validado por {interaction.user.mention}!**", ephemeral=False)
         else:
-            await interaction.response.send_message("❌ Apenas o Mediador ou Staff.", ephemeral=True)
+            await interaction.response.send_message("❌ Apenas o Mediador da vez ou Staff.", ephemeral=True)
 
     @discord.ui.button(label="Fechar Sala", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="btn_close_sala", row=1)
     async def fechar(self, interaction, button):
@@ -63,39 +63,39 @@ class PartidaConfirmacaoView(discord.ui.View):
 
     async def atualizar_status(self, interaction):
         if len(self.confirmados) >= len(self.jogadores):
-            # ROTACAO
+            # LÓGICA DE ROTAÇÃO DE MEDIADOR
             dados_pix = None
             mediador_txt = "Sem Mediador Online"
             
             if mediadores_ativos:
                 mediador_id = mediadores_ativos.pop(0)
-                mediadores_ativos.append(mediador_id)
+                mediadores_ativos.append(mediador_id) # Volta pro final da fila
                 dados = configuracao["dados_mediadores"].get(mediador_id)
                 if dados:
                     dados_pix = dados
                     mediador_txt = f"<@{mediador_id}>"
             
+            # Fallback (Dados padrão se não tiver mediador)
             if not dados_pix:
                 dados_pix = {"nome": "Admin", "chave": "Chave Indisponível", "qrcode": "https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg"}
 
-            # LIMPEZA
+            # LIMPEZA DO CHAT E RENOMEAÇÃO
             configuracao["contador_salas"] += 1
             num = configuracao["contador_salas"]
             tipo = "emulador" if "emulador" in self.modo.lower() else "mobile"
             await interaction.channel.edit(name=f"{tipo}-{num}")
             await interaction.channel.purge(limit=50)
 
-            # PAINEL FINAL
+            # PAINEL FINAL "PARTIDA CONFIRMADA"
             embed_final = discord.Embed(title="Partida Confirmada", color=discord.Color.blue())
             embed_final.set_thumbnail(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
             embed_final.add_field(name="🎮 Estilo de Jogo", value=self.modo, inline=False)
             embed_final.add_field(name="ℹ️ Informações da Aposta", value=f"Valor Da Sala: {self.valor}\nMediador: {mediador_txt}", inline=False)
             embed_final.add_field(name="💸 Valor da Aposta", value=self.valor, inline=False)
-            
-            lista_jogs = "\n".join([f"<@{uid}>" for uid in self.jogadores])
-            embed_final.add_field(name="👥 Jogadores", value=lista_jogs, inline=False)
+            embed_final.add_field(name="👥 Jogadores", value="\n".join([f"<@{u}>" for u in self.jogadores]), inline=False)
             await interaction.channel.send(embed=embed_final)
 
+            # ENVIAR QR CODE E PIX
             embed_qr = discord.Embed(color=discord.Color.dark_theme())
             embed_qr.set_image(url=dados_pix["qrcode"]) 
             await interaction.channel.send(embed=embed_qr)
@@ -129,23 +129,24 @@ class PartidaConfirmacaoView(discord.ui.View):
         await interaction.response.send_message(f"📢 {interaction.user.mention} quer combinar regras!", ephemeral=False)
 
 # ==============================================================================
-# 2. SISTEMA DE LOBBY (FILAS)
+# 2. SISTEMA DE LOBBY (FILAS - SEMPRE 2 JOGADORES)
 # ==============================================================================
 
 class FilaLobbyView(discord.ui.View):
     def __init__(self, modo: str, valor: str, limite: int):
         super().__init__(timeout=None)
-        self.limite, self.modo, self.valor = limite, modo, valor
-        self.jogadores, self.dados_visuais = [], {}
+        self.limite = limite
+        self.modo = modo
+        self.valor = valor
+        self.jogadores = [] 
+        self.dados_visuais = {} 
         self.configurar_botoes()
 
     def configurar_botoes(self):
         self.clear_items()
-        if self.limite == 2:
-            self.add_item(discord.ui.Button(label="Gel Normal", style=discord.ButtonStyle.secondary, custom_id="j_norm"))
-            self.add_item(discord.ui.Button(label="Gel Infinito", style=discord.ButtonStyle.secondary, custom_id="j_inf"))
-        else:
-            self.add_item(discord.ui.Button(label="Entrar na fila", style=discord.ButtonStyle.secondary, custom_id="j_geral"))
+        # Como o limite agora é SEMPRE 2, sempre mostrará estes botões:
+        self.add_item(discord.ui.Button(label="Gel Normal", style=discord.ButtonStyle.secondary, custom_id="j_norm"))
+        self.add_item(discord.ui.Button(label="Gel Infinito", style=discord.ButtonStyle.secondary, custom_id="j_inf"))
         self.add_item(discord.ui.Button(label="Sair da Fila", style=discord.ButtonStyle.danger, custom_id="l_fila"))
 
     async def atualizar_embed(self, interaction):
@@ -192,31 +193,41 @@ class FilaLobbyView(discord.ui.View):
         return True
 
 # ==============================================================================
-# 3. CRIAÇÃO DE FILAS (MASSA E FORMATADA)
+# 3. CRIAÇÃO DE FILAS (MASSIVA + FORMATAÇÃO)
 # ==============================================================================
 
 class CriarFilasEmMassaModal(discord.ui.Modal, title="Criar Filas (Max 15)"):
     nome = discord.ui.TextInput(label="Nome", placeholder="Ex: 1v1 Mobile")
-    valores = discord.ui.TextInput(label="Valores (Ex: 10,00, 20,00)", placeholder="Separe por vírgula", style=discord.TextStyle.paragraph)
+    valores = discord.ui.TextInput(label="Valores (Separe por BARRA /)", placeholder="Ex: 10,00 / 20,00 / 5,00", style=discord.TextStyle.paragraph)
 
     async def on_submit(self, interaction: discord.Interaction):
-        lista = [v.strip() for v in self.valores.value.split(",") if v.strip()][:15]
-        await interaction.response.send_message(f"✅ Criando {len(lista)} filas...", ephemeral=True)
-        for val in lista:
-            # Força o formato R$ X,XX para não quebrar linha
-            val_limpo = val.replace("R$", "").strip()
-            v_fmt = f"R$ {val_limpo}"
-            
+        # Separa por BARRA (/)
+        lista_raw = [v.strip() for v in self.valores.value.split("/") if v.strip()][:15]
+        
+        if not lista_raw: return await interaction.response.send_message("❌ Nenhum valor válido.", ephemeral=True)
+        
+        await interaction.response.send_message(f"✅ Criando {len(lista_raw)} filas...", ephemeral=True)
+        
+        for val in lista_raw:
+            v_limpo = val.replace("R$", "").strip()
+            # Formatação de moeda:
+            if "," not in v_limpo and "." not in v_limpo:
+                v_fmt = f"R$ {v_limpo},00"
+            else:
+                v_fmt = f"R$ {v_limpo}"
+
             embed = discord.Embed(title=f"{self.nome.value} | WS APOSTAS", color=discord.Color.blue())
             embed.add_field(name="👑 | Modo", value=self.nome.value, inline=False)
             embed.add_field(name="💸 | Valor", value=v_fmt, inline=False)
             embed.add_field(name="👥 | Jogadores", value="Nenhum jogador na fila", inline=False)
             embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
+            
+            # AQUI ESTÁ A FIXAÇÃO: Limite sempre 2 (1v1)
             await interaction.channel.send(embed=embed, view=FilaLobbyView(self.nome.value, v_fmt, 2))
             await asyncio.sleep(1)
 
 # ==============================================================================
-# 4. PAINEL DE CONFIGURAÇÃO DE PIX (NOVO)
+# 4. PAINEL DE CONFIGURAÇÃO DE PIX (ROXO)
 # ==============================================================================
 
 class CadastroPixModal(discord.ui.Modal, title="Cadastrar Pix"):
@@ -260,7 +271,7 @@ class MediadorQueueView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
     
     async def atualizar_embed(self, i):
-        txt = "Nenhum mediador na fila." if not mediadores_ativos else "".join([f"**{idx}** • <@{u}> `{u}`\n" for idx, u in enumerate(mediadores_ativos, 1)])
+        txt = "Nenhum mediador na fila." if not mediadores_ativos else "".join([f"**{idx+1}** • <@{u}> `{u}`\n" for idx, u in enumerate(mediadores_ativos)])
         embed = i.message.embeds[0]
         embed.description = f"**Entre na fila para começar a mediar suas filas**\n\n{txt}"
         if i.response.is_done(): await i.message.edit(embed=embed)
@@ -272,7 +283,7 @@ class MediadorQueueView(discord.ui.View):
             return await i.response.send_message("❌ Sem permissão.", ephemeral=True)
         if i.user.id not in configuracao["dados_mediadores"]:
             return await i.response.send_message("❌ Cadastre seu PIX primeiro no painel `/cadastrar_pix`!", ephemeral=True)
-        if i.user.id in mediadores_ativos: return
+        if i.user.id in mediadores_ativos: return await i.response.send_message("❌ Já está na fila.", ephemeral=True)
         mediadores_ativos.append(i.user.id)
         await i.response.send_message("✅ Entrou!", ephemeral=True); await self.atualizar_embed(i)
 
@@ -290,14 +301,13 @@ class MediadorQueueView(discord.ui.View):
         if i.user.guild_permissions.manage_messages: await i.response.send_message("Menu Staff", ephemeral=True)
 
 # ==============================================================================
-# 6. COMANDOS FINAIS
+# 6. COMANDOS SLASH
 # ==============================================================================
 
 @bot.tree.command(name="cadastrar_pix", description="Abre painel de configuração de PIX")
 async def cadastrar_pix(i: discord.Interaction):
-    # Envia o Painel da Foto 1000006103
-    embed = discord.Embed(title="Painel Para Configurar Chave PIX", description="Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\nSelecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX.", color=discord.Color.dark_purple()) # Roxo escuro
-    # Pode adicionar thumbnail da Org Fire se tiver link
+    embed = discord.Embed(title="Painel Para Configurar Chave PIX", description="Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\nSelecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX.", color=discord.Color.dark_purple())
+    embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
     await i.channel.send(embed=embed, view=PainelConfigPixView())
     await i.response.send_message("✅ Painel enviado.", ephemeral=True)
 
@@ -320,10 +330,17 @@ async def cfg_f(i: discord.Interaction, c1: discord.TextChannel):
     if i.user.id == DONO_ID: configuracao["canais"]["Filas"] = [c1]; await i.response.send_message("✅ Configurado.", ephemeral=True)
 
 @bot.event
+async def on_message(message):
+    if message.is_system() and isinstance(message.channel, discord.Thread):
+        try: await message.delete()
+        except: pass
+    await bot.process_commands(message)
+
+@bot.event
 async def on_ready():
     await bot.tree.sync()
     print(f"✅ Bot Online: {bot.user}")
 
 if TOKEN:
     bot.run(TOKEN)
-            
+                       
