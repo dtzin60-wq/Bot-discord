@@ -15,7 +15,7 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- MEMÓRIA DO BOT ---
+# --- MEMÓRIA ---
 configuracao = {
     "cargos": {"ver": [], "finalizar": []},
     "canais": {"Suporte": None, "Reembolso": None, "Evento": None, "Vagas": None, "Filas": []},
@@ -26,30 +26,25 @@ configuracao = {
 tickets_abertos = []
 
 # ==============================================================================
-# 1. SISTEMA DE FILA / LOBBY (VISUAL RESTAURADO COM ESCOLHA)
+# 1. SISTEMA DE FILA / LOBBY (LIMPO E FIXO EM 2 JOGADORES)
 # ==============================================================================
 
 class FilaLobbyView(discord.ui.View):
-    def __init__(self, limite: int, modo: str, valor: str):
+    def __init__(self, modo: str, valor: str):
         super().__init__(timeout=None)
-        self.limite = limite
+        self.limite = 2 # FIXO EM 2 JOGADORES
         self.modo = modo
         self.valor = valor
-        self.jogadores = [] # Lista de IDs para contagem
-        self.dados_visuais = {} # Dicionário {id: "Opção Escolhida"} para o visual
+        self.jogadores = [] 
+        self.dados_visuais = {} 
         self.configurar_botoes()
 
     def configurar_botoes(self):
         self.clear_items()
-        # Se for 1v1 (2 pessoas), mostra opções de Gelo (CINZAS)
-        if self.limite == 2:
-            self.add_item(discord.ui.Button(label="Gel Normal", style=discord.ButtonStyle.secondary, emoji="🧊", custom_id=f"join_normal"))
-            self.add_item(discord.ui.Button(label="Gel Infinito", style=discord.ButtonStyle.secondary, emoji="♾️", custom_id=f"join_infinito"))
-        else:
-            # Se for 2v2+ (Mais de 2), mostra Entrar (CINZA)
-            self.add_item(discord.ui.Button(label="Entrar na Fila", style=discord.ButtonStyle.secondary, emoji="✅", custom_id=f"join_geral"))
-        
-        # Botão Sair (VERMELHO)
+        # Botões para 1v1
+        self.add_item(discord.ui.Button(label="Gel Normal", style=discord.ButtonStyle.secondary, emoji="🧊", custom_id=f"join_normal"))
+        self.add_item(discord.ui.Button(label="Gel Infinito", style=discord.ButtonStyle.secondary, emoji="♾️", custom_id=f"join_infinito"))
+        # Botão Sair
         self.add_item(discord.ui.Button(label="Sair da Fila", style=discord.ButtonStyle.danger, emoji="✖️", custom_id=f"leave_fila"))
 
     async def atualizar_embed(self, interaction):
@@ -58,17 +53,16 @@ class FilaLobbyView(discord.ui.View):
         else:
             texto_jogadores = ""
             for uid in self.jogadores:
-                # Pega a escolha salva (ex: "Gel Infinito") e monta a string
+                # Mostra apenas: @Usuario | Gel Infinito (Sem emoji)
                 escolha = self.dados_visuais.get(uid, "Entrou")
                 texto_jogadores += f"<@{uid}> | {escolha}\n"
 
         embed = interaction.message.embeds[0]
-        # Atualiza o campo "Jogadores" (Índice 2)
-        embed.set_field_at(2, name="👥 | Jogadores", value=f"{texto_jogadores}\n\n**Status:** {len(self.jogadores)}/{self.limite}", inline=False)
+        # REMOVIDO O STATUS (X/2)
+        embed.set_field_at(2, name="👥 | Jogadores", value=f"{texto_jogadores}", inline=False)
         await interaction.message.edit(embed=embed, view=self)
 
     async def iniciar_partida(self, interaction):
-        # Sorteia canal
         canais = configuracao["canais"].get("Filas", [])
         canal_destino = random.choice(canais) if canais else interaction.channel
         
@@ -93,7 +87,6 @@ class FilaLobbyView(discord.ui.View):
         )
         await thread.send(content=mencoes, embed=embed, view=MatchControlView())
         
-        # Reseta fila
         self.jogadores = []
         self.dados_visuais = {}
         await self.atualizar_embed(interaction)
@@ -102,7 +95,6 @@ class FilaLobbyView(discord.ui.View):
         cid = interaction.data["custom_id"]
         uid = interaction.user.id
 
-        # Lógica SAIR
         if cid == "leave_fila":
             if uid in self.jogadores:
                 self.jogadores.remove(uid)
@@ -113,21 +105,19 @@ class FilaLobbyView(discord.ui.View):
                 await interaction.response.send_message("❌ Você não está na fila.", ephemeral=True)
             return True
 
-        # Lógica ENTRAR
         if uid in self.jogadores:
             return await interaction.response.send_message("❌ Você já está nesta fila!", ephemeral=True)
         
         if len(self.jogadores) >= self.limite:
             return await interaction.response.send_message("❌ Fila cheia!", ephemeral=True)
 
-        # Define qual texto vai aparecer do lado do nome
+        # ESCOLHA DE TEXTO (SEM EMOJI NA LISTA)
         texto_escolha = ""
-        if cid == "join_normal": texto_escolha = "🧊 Gel Normal"
-        elif cid == "join_infinito": texto_escolha = "♾️ Gel Infinito"
-        elif cid == "join_geral": texto_escolha = "✅ Entrou"
+        if cid == "join_normal": texto_escolha = "Gel Normal"
+        elif cid == "join_infinito": texto_escolha = "Gel Infinito"
 
         self.jogadores.append(uid)
-        self.dados_visuais[uid] = texto_escolha # Salva a escolha visualmente
+        self.dados_visuais[uid] = texto_escolha 
         
         await interaction.response.defer()
         await self.atualizar_embed(interaction)
@@ -136,34 +126,28 @@ class FilaLobbyView(discord.ui.View):
             await self.iniciar_partida(interaction)
         return True
 
-class CriarFilaModal(discord.ui.Modal, title="Criar Fila Personalizada"):
+class CriarFilaModal(discord.ui.Modal, title="Criar Fila (1v1)"):
     nome = discord.ui.TextInput(label="Nome (Ex: 1v1 | Mobile)", placeholder="Digite o modo...")
     valor = discord.ui.TextInput(label="Valor (Ex: R$ 1,00)", placeholder="Digite o valor...")
-    qtd = discord.ui.TextInput(label="Jogadores (2 ou 4)", placeholder="2", max_length=1)
+    # REMOVIDO INPUT DE JOGADORES (SEMPRE 2)
 
     async def on_submit(self, interaction):
-        try:
-            lim = int(self.qtd.value)
-            if lim < 2: return await interaction.response.send_message("Mínimo 2 jogadores.", ephemeral=True)
-            
-            await interaction.response.defer(ephemeral=True)
-            
-            # Embed Visual igual ao solicitado
-            embed = discord.Embed(title=f"{self.nome.value} | WS APOSTAS", color=discord.Color.blue())
-            embed.add_field(name="👑 | Modo", value=self.nome.value, inline=False)
-            embed.add_field(name="💸 | Valor", value=self.valor.value, inline=False)
-            embed.add_field(name="👥 | Jogadores", value="Nenhum jogador na fila", inline=False)
-            
-            # Imagem do Astronauta
-            embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
-            
-            view = FilaLobbyView(lim, self.nome.value, self.valor.value)
-            await interaction.channel.send(embed=embed, view=view)
-            await interaction.followup.send("✅ Fila criada!", ephemeral=True)
-        except: pass
+        await interaction.response.defer(ephemeral=True)
+        
+        embed = discord.Embed(title=f"{self.nome.value} | WS APOSTAS", color=discord.Color.blue())
+        embed.add_field(name="👑 | Modo", value=self.nome.value, inline=False)
+        embed.add_field(name="💸 | Valor", value=self.valor.value, inline=False)
+        embed.add_field(name="👥 | Jogadores", value="Nenhum jogador na fila", inline=False)
+        
+        embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
+        
+        # Chama a view sem pedir limite (Fixo em 2)
+        view = FilaLobbyView(self.nome.value, self.valor.value)
+        await interaction.channel.send(embed=embed, view=view)
+        await interaction.followup.send("✅ Fila criada!", ephemeral=True)
 
 # ==============================================================================
-# 2. CONTROLES DE TICKET (BOTOES INTERNOS)
+# 2. CONTROLES DE TICKET
 # ==============================================================================
 
 class MatchControlView(discord.ui.View):
@@ -180,13 +164,11 @@ class TicketControlView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Finalizar", style=discord.ButtonStyle.success, emoji="✅", custom_id="btn_fin_main")
     async def f(self, i, b):
-        # Verifica cargos configurados
         user = i.user
         permitido = user.id == DONO_ID or user.guild_permissions.manage_messages
         if not permitido:
             for cargo in configuracao["cargos"]["finalizar"]:
                 if cargo in user.roles: permitido = True; break
-        
         if permitido: await i.channel.delete()
         else: await i.response.send_message("❌ Sem permissão.", ephemeral=True)
 
@@ -226,7 +208,7 @@ class StaffActionsView(discord.ui.View):
     def __init__(self): super().__init__(timeout=60); self.add_item(StaffActionsDropdown())
 
 # ==============================================================================
-# 4. PAINEL PRINCIPAL (TICKET GERAL)
+# 4. PAINEL PRINCIPAL
 # ==============================================================================
 class TicketDropdown(discord.ui.Select):
     def __init__(self):
@@ -239,7 +221,6 @@ class TicketDropdown(discord.ui.Select):
         super().__init__(placeholder="Selecione uma função", options=options, custom_id="main_drop")
     async def callback(self, i):
         try:
-            # Mapeamento para os nomes salvos na config
             mapa = {"Suporte": "Suporte", "Reembolso": "Reembolso", "Receber Evento": "Evento", "Vagas de Mediador": "Vagas"}
             chave = mapa[self.values[0]]
             canal = configuracao["canais"].get(chave) or i.channel
@@ -249,7 +230,6 @@ class TicketDropdown(discord.ui.Select):
             
             embed = discord.Embed(description="Aguarde o atendimento.", color=discord.Color.dark_grey())
             embed.add_field(name="Horário:", value=f"<t:{int(datetime.datetime.now().timestamp())}:F>")
-            
             mencao = f"{i.user.mention} "
             for c in configuracao["cargos"]["ver"]: mencao += f" {c.mention}"
             
@@ -261,10 +241,10 @@ class MainView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None); self.add_item(TicketDropdown())
 
 # ==============================================================================
-# 5. COMANDOS (RESTAURADOS E COM 4 CARGOS)
+# 5. COMANDOS
 # ==============================================================================
 
-@bot.tree.command(name="criar_painel", description="Cria o painel WS TICKET (Até 4 cargos)")
+@bot.tree.command(name="criar_painel", description="Painel WS TICKET (4 Cargos)")
 @app_commands.describe(
     staff_1="Cargo ver 1", staff_2="Cargo ver 2", staff_3="Cargo ver 3", staff_4="Cargo ver 4",
     finalizar_1="Cargo fim 1", finalizar_2="Cargo fim 2", finalizar_3="Cargo fim 3", finalizar_4="Cargo fim 4"
@@ -278,11 +258,9 @@ async def criar_painel(
     await interaction.response.defer(ephemeral=True)
     if interaction.user.id != DONO_ID: return await interaction.followup.send("❌ Apenas o dono.")
     
-    # Salva listas de cargos
     configuracao["cargos"]["ver"] = [c for c in [staff_1, staff_2, staff_3, staff_4] if c]
     configuracao["cargos"]["finalizar"] = [c for c in [finalizar_1, finalizar_2, finalizar_3, finalizar_4] if c]
 
-    # DESCRIÇÃO COMPLETA RESTAURADA
     descricao = (
         "👉 Abra ticket com o que você precisa abaixo com as informações de guia.\n\n"
         "☞ **TICKET SUPORTE**\n"
@@ -300,14 +278,14 @@ async def criar_painel(
     embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
     
     await interaction.channel.send(embed=embed, view=MainView())
-    await interaction.followup.send("✅ Painel completo enviado!", ephemeral=True)
+    await interaction.followup.send("✅ Painel enviado!", ephemeral=True)
 
-@bot.tree.command(name="criarfila", description="Cria Lobby de Apostas")
+@bot.tree.command(name="criarfila", description="Cria Lobby 1v1 (Fixo 2 Jogadores)")
 async def criarfila(i: discord.Interaction):
     if i.user.id != DONO_ID: return
     await i.response.send_modal(CriarFilaModal())
 
-# Outros comandos
+# OUTROS COMANDOS RESTAURADOS
 @bot.tree.command(name="darcoin", description="💰 Adiciona coins")
 async def darcoin(i: discord.Interaction, user: discord.User, qtd: int):
     if i.user.id != DONO_ID: return
@@ -358,7 +336,6 @@ async def cfg_f(i: discord.Interaction, c1: discord.TextChannel, c2: discord.Tex
 
 @bot.event
 async def on_message(message):
-    # Apaga msg de sistema (Fulano entrou no ticket)
     if message.is_system() and isinstance(message.channel, discord.Thread):
         try: await message.delete()
         except: pass
