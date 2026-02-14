@@ -55,8 +55,14 @@ class TicketControlView(discord.ui.View):
 
     @discord.ui.button(label="Sair Ticket", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="btn_sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Remove o usuário do tópico.
+        # Ao ser removido, o tópico desaparece da lista dele e ele perde o acesso.
         await interaction.channel.remove_user(interaction.user)
-        await interaction.response.send_message("👋 Você saiu do ticket.", ephemeral=True)
+        # Tenta enviar msg no privado confirmando (opcional, pode falhar se DM for fechada)
+        try:
+            await interaction.user.send(f"👋 Você saiu do ticket **{interaction.channel.name}**. Se tentar entrar novamente, não terá acesso.")
+        except:
+            pass
 
 # --- MENU DE SELEÇÃO ---
 class TicketDropdown(discord.ui.Select):
@@ -153,5 +159,16 @@ async def criar_painel(interaction: discord.Interaction, cargo_ver: discord.Role
     await interaction.channel.send(embed=embed, view=MainView())
     await interaction.response.send_message("✅ Painel WS TICKET enviado!", ephemeral=True)
 
+# --- COMANDO 3: QUEM PODE USAR ---
+@bot.tree.command(name="quem_pode_usar", description="💸 Quem pode usar os comandos do bot?")
+async def quem_pode_usar(interaction: discord.Interaction):
+    embed = discord.Embed(title="💸 Permissões do Bot", color=discord.Color.gold())
+    embed.description = (
+        "Atualmente, a segurança do bot está configurada para:\n\n"
+        f"👑 **Dono Supremo:** <@{DONO_ID}>\n"
+        "Somente este usuário tem permissão para usar os comandos de configuração (`/criar_painel`, `/configurar_topicos`).\n\n"
+        "👮 **Staff:** Pode finalizar tickets se tiver o cargo configurado."
+    )
+    await interaction.response.send_message(embed=embed)
+
 if TOKEN: bot.run(TOKEN)
-    
