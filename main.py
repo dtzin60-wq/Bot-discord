@@ -15,7 +15,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Memória de Configuração
 configuracao = {
-    "cargos": {"ver": None, "finalizar": None},
+    "cargos": {
+        "ver": [],       # Lista de cargos que veem
+        "finalizar": []  # Lista de cargos que finalizam
+    },
     "canais": {
         "Suporte": None,
         "Reembolso": None,
@@ -31,11 +34,17 @@ class TicketControlView(discord.ui.View):
 
     @discord.ui.button(label="Finalizar ticket", style=discord.ButtonStyle.success, emoji="✅", custom_id="btn_finalizar")
     async def finalizar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        roles = interaction.user.roles
-        cargo_finalizar = configuracao["cargos"]["finalizar"]
+        user = interaction.user
+        roles = user.roles
         
-        # Verifica permissão (Dono, Admin ou Cargo configurado)
-        e_staff = interaction.user.id == DONO_ID or interaction.user.guild_permissions.administrator or (cargo_finalizar in roles if cargo_finalizar else False)
+        # Lista de cargos permitidos
+        cargos_permitidos = configuracao["cargos"]["finalizar"]
+        
+        # Verifica se o usuário tem ALGUM dos cargos de finalizar
+        tem_cargo = any(cargo in roles for cargo in cargos_permitidos)
+        
+        # Permissões: Dono, Admin ou Cargo Configurado
+        e_staff = user.id == DONO_ID or user.guild_permissions.administrator or tem_cargo
 
         if e_staff:
             await interaction.response.send_message("🚨 **Este tópico será excluído em 5 segundos...**", ephemeral=True)
@@ -55,12 +64,9 @@ class TicketControlView(discord.ui.View):
 
     @discord.ui.button(label="Sair Ticket", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="btn_sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Remove o usuário do tópico.
-        # Ao ser removido, o tópico desaparece da lista dele e ele perde o acesso.
         await interaction.channel.remove_user(interaction.user)
-        # Tenta enviar msg no privado confirmando (opcional, pode falhar se DM for fechada)
         try:
-            await interaction.user.send(f"👋 Você saiu do ticket **{interaction.channel.name}**. Se tentar entrar novamente, não terá acesso.")
+            await interaction.user.send(f"👋 Você saiu do ticket **{interaction.channel.name}**.")
         except:
             pass
 
@@ -84,7 +90,7 @@ class TicketDropdown(discord.ui.Select):
             return
 
         try:
-            # CRIAÇÃO IMEDIATA DO TÓPICO
+            # CRIA TÓPICO
             thread = await canal_destino.create_thread(
                 name=f"{escolha}-{interaction.user.name}",
                 type=discord.ChannelType.private_thread,
@@ -106,8 +112,17 @@ class TicketDropdown(discord.ui.Select):
             agora = datetime.datetime.now()
             embed.add_field(name="Horário de Abertura:", value=f"<t:{int(agora.timestamp())}:F>")
             
+            # Monta a menção com TODOS os cargos de VER + FINALIZAR
             mencao = f"{interaction.user.mention}"
-            if configuracao["cargos"]["ver"]: mencao += f" {configuracao['cargos']['ver'].mention}"
+            
+            # Adiciona cargos de ver
+            for cargo in configuracao["cargos"]["ver"]:
+                mencao += f" {cargo.mention}"
+            
+            # Adiciona cargos de finalizar (para eles verem também)
+            for cargo in configuracao["cargos"]["finalizar"]:
+                if cargo not in configuracao["cargos"]["ver"]: # Evita duplicar se o cargo já estiver na lista de ver
+                    mencao += f" {cargo.mention}"
 
             await thread.send(content=mencao, embed=embed, view=TicketControlView())
 
@@ -131,13 +146,45 @@ async def configurar_topicos(interaction: discord.Interaction, canal_suporte: di
     configuracao["canais"].update({"Suporte": canal_suporte, "Reembolso": canal_reembolso, "Receber Evento": canal_evento, "Vagas de Mediador": canal_vagas})
     await interaction.response.send_message("✅ Canais configurados!", ephemeral=True)
 
-# --- COMANDO 2: CRIAR PAINEL ---
-@bot.tree.command(name="criar_painel", description="💸 Envia o painel WS TICKET")
-async def criar_painel(interaction: discord.Interaction, cargo_ver: discord.Role, cargo_finalizar: discord.Role):
+# --- COMANDO 2: CRIAR PAINEL (ATUALIZADO PARA 4 CARGOS CADA) ---
+@bot.tree.command(name="criar_painel", description="💸 Envia o painel WS TICKET (Configure os cargos)")
+@app_commands.describe(
+    staff_1="Cargo principal de suporte",
+    finalizar_1="Cargo principal para finalizar",
+    staff_2="[Opcional] Cargo extra de suporte",
+    staff_3="[Opcional] Cargo extra de suporte",
+    staff_4="[Opcional] Cargo extra de suporte",
+    finalizar_2="[Opcional] Cargo extra para finalizar",
+    finalizar_3="[Opcional] Cargo extra para finalizar",
+    finalizar_4="[Opcional] Cargo extra para finalizar"
+)
+async def criar_painel(
+    interaction: discord.Interaction, 
+    staff_1: discord.Role, 
+    finalizar_1: discord.Role,
+    staff_2: discord.Role = None, 
+    staff_3: discord.Role = None,
+    staff_4: discord.Role = None,
+    finalizar_2: discord.Role = None,
+    finalizar_3: discord.Role = None,
+    finalizar_4: discord.Role = None
+):
     if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono!", ephemeral=True)
-    configuracao["cargos"]["ver"], configuracao["cargos"]["finalizar"] = cargo_ver, cargo_finalizar
+    
+    # Salva cargos de VER (Staff)
+    cargos_ver = [staff_1]
+    if staff_2: cargos_ver.append(staff_2)
+    if staff_3: cargos_ver.append(staff_3)
+    if staff_4: cargos_ver.append(staff_4)
+    configuracao["cargos"]["ver"] = cargos_ver
 
-    # TEXTO DA IMAGEM
+    # Salva cargos de FINALIZAR
+    cargos_finalizar = [finalizar_1]
+    if finalizar_2: cargos_finalizar.append(finalizar_2)
+    if finalizar_3: cargos_finalizar.append(finalizar_3)
+    if finalizar_4: cargos_finalizar.append(finalizar_4)
+    configuracao["cargos"]["finalizar"] = cargos_finalizar
+
     descricao = (
         "👉 Abra ticket com o que você precisa abaixo com as informações de guia.\n\n"
         "☞ **TICKET SUPORTE**\n"
@@ -152,12 +199,17 @@ async def criar_painel(interaction: discord.Interaction, cargo_ver: discord.Role
     )
 
     embed = discord.Embed(title="WS TICKET", description=descricao, color=discord.Color.from_rgb(10, 10, 10))
-    
-    # SUA NOVA IMAGEM AQUI
     embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg?ex=6990bea7&is=698f6d27&hm=ab8e0065381fdebb51ecddda1fe599a7366aa8dfe622cfeb7f720b7fadedd896&") 
     
     await interaction.channel.send(embed=embed, view=MainView())
-    await interaction.response.send_message("✅ Painel WS TICKET enviado!", ephemeral=True)
+    
+    # Resposta de confirmação
+    await interaction.response.send_message(
+        f"✅ **Painel WS TICKET criado!**\n\n"
+        f"👀 **Podem ver:** {len(cargos_ver)} cargos configurados.\n"
+        f"🔒 **Podem finalizar:** {len(cargos_finalizar)} cargos configurados.", 
+        ephemeral=True
+    )
 
 # --- COMANDO 3: QUEM PODE USAR ---
 @bot.tree.command(name="quem_pode_usar", description="💸 Quem pode usar os comandos do bot?")
@@ -166,8 +218,8 @@ async def quem_pode_usar(interaction: discord.Interaction):
     embed.description = (
         "Atualmente, a segurança do bot está configurada para:\n\n"
         f"👑 **Dono Supremo:** <@{DONO_ID}>\n"
-        "Somente este usuário tem permissão para usar os comandos de configuração (`/criar_painel`, `/configurar_topicos`).\n\n"
-        "👮 **Staff:** Pode finalizar tickets se tiver o cargo configurado."
+        "Somente este usuário tem permissão para usar os comandos de configuração.\n\n"
+        "👮 **Staff:** Pode finalizar tickets se tiver um dos cargos configurados."
     )
     await interaction.response.send_message(embed=embed)
 
