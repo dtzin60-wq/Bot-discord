@@ -20,7 +20,6 @@ configuracao = {
     "canais": {"Suporte": None, "Reembolso": None, "Receber Evento": None, "Vagas de Mediador": None}
 }
 
-# Lista para impedir múltiplos tickets (Salva ID do usuário)
 tickets_abertos = []
 
 # --- VIEW DE CONTROLE ---
@@ -28,10 +27,9 @@ class TicketControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Finalizar ticket", style=discord.ButtonStyle.success, emoji="✅", custom_id="btn_finalizar_v4")
+    @discord.ui.button(label="Finalizar ticket", style=discord.ButtonStyle.success, emoji="✅", custom_id="btn_finalizar_v5")
     async def finalizar(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            # Verifica permissão
             cargos_finalizar = configuracao["cargos"].get("finalizar", [])
             user = interaction.user
             e_staff = user.id == DONO_ID or user.guild_permissions.administrator
@@ -41,59 +39,41 @@ class TicketControlView(discord.ui.View):
                     if cargo in user.roles:
                         e_staff = True
                         break
-            
             if not cargos_finalizar and user.guild_permissions.administrator:
                 e_staff = True
 
             if e_staff:
                 await interaction.response.send_message("🚨 **Fechando ticket em 5 segundos...**", ephemeral=True)
-                
-                # Remove o usuário da lista de tickets abertos (procura quem é o dono do ticket pelo nome ou limpa geral)
-                # Como é difícil saber quem é o dono exato aqui, vamos remover pelo nome do canal ou resetar na lógica de sair.
-                # Nota: Em bot simples sem banco de dados, o "Limpar lista" perfeito é difícil, 
-                # mas aqui vamos tentar remover o usuário que interagiu se ele for o dono, ou deixar que o delete resolva.
-                
                 await asyncio.sleep(5)
                 if interaction.channel: 
-                    # Tenta limpar o ID do dono do ticket da lista (Gambiarra funcional baseada no nome do canal)
-                    # O nome do canal é "categoria-username".
+                    # Tenta remover da lista de bloqueio se possível
                     try:
-                        nome_dono = interaction.channel.name.split("-")[-1]
-                        # Isso não é 100% preciso se o usuario mudar de nome, mas ajuda.
-                        # O ideal é o usuário clicar em sair, mas finalizar deleta tudo.
-                        # Vamos limpar o ID de quem clicou se não for staff, mas staff finalizando não é o dono.
-                        pass 
+                        # Gambiarra para tentar liberar o user, mas o ideal é o user sair
+                        pass
                     except:
                         pass
-                    
                     await interaction.channel.delete()
             else:
                 await interaction.response.send_message("❌ Você não tem permissão.", ephemeral=True)
         except Exception as e:
             print(f"Erro finalizar: {e}")
 
-    @discord.ui.button(label="Assumir Ticket", style=discord.ButtonStyle.secondary, emoji="🛡️", custom_id="btn_assumir_v4")
+    @discord.ui.button(label="Assumir Ticket", style=discord.ButtonStyle.secondary, emoji="🛡️", custom_id="btn_assumir_v5")
     async def assumir(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.channel.send(f"🛡️ {interaction.user.mention} assumiu este atendimento!")
         await interaction.response.send_message("Atendimento assumido!", ephemeral=True)
 
-    @discord.ui.button(label="Painel Staff", style=discord.ButtonStyle.secondary, emoji="🛠️", custom_id="btn_staff_v4")
+    @discord.ui.button(label="Painel Staff", style=discord.ButtonStyle.secondary, emoji="🛠️", custom_id="btn_staff_v5")
     async def staff(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("🛠️ Ferramentas da Staff (Em breve)", ephemeral=True)
 
-    @discord.ui.button(label="Sair Ticket", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="btn_sair_v4")
+    @discord.ui.button(label="Sair Ticket", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="btn_sair_v5")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             user = interaction.user
-            # Remove da lista de tickets abertos
             if user.id in tickets_abertos:
                 tickets_abertos.remove(user.id)
-            
-            # Remove permissão (Kick do tópico)
             await interaction.channel.remove_user(user)
-            
-            # Resposta invisível (O usuário não verá isso pois perdeu acesso na hora, mas evita erro na API)
-            # A mágica da imagem "sem acesso" acontece nativamente aqui.
         except:
             pass
 
@@ -106,13 +86,12 @@ class TicketDropdown(discord.ui.Select):
             discord.SelectOption(label="Receber Evento", emoji="💫", description="Clique aqui caso queira receber algum evento"),
             discord.SelectOption(label="Vagas de Mediador", emoji="👑", description="Clique aqui caso queira alguma vaga de mediador na ORG"),
         ]
-        super().__init__(placeholder="Selecione uma função", options=options, custom_id="select_menu_v4")
+        super().__init__(placeholder="Selecione uma função", options=options, custom_id="select_menu_v5")
 
     async def callback(self, interaction: discord.Interaction):
         try:
             user = interaction.user
             
-            # 1. VERIFICAÇÃO DE TICKET DUPLICADO
             if user.id in tickets_abertos:
                 await interaction.response.send_message("Você já tem um ticket criado não pode criar outro❗", ephemeral=True)
                 return
@@ -124,35 +103,34 @@ class TicketDropdown(discord.ui.Select):
                 await interaction.response.send_message(f"⚠️ Erro: Canal para **{escolha}** não configurado. Use `/configurar_topicos`.", ephemeral=True)
                 return
 
-            # Cria o tópico
             thread = await canal_destino.create_thread(
                 name=f"{escolha}-{user.name}", 
                 type=discord.ChannelType.private_thread, 
                 invitable=False
             )
             
-            # Adiciona o usuário e BLOQUEIA novo ticket
             tickets_abertos.append(user.id)
             await thread.add_user(user)
 
-            # 2. LIMPEZA DA MENSAGEM DO SISTEMA "ADICIONOU FULANO"
-            # Tenta apagar a mensagem automática do Discord que diz "Bot adicionou User"
+            # --- AQUI ESTÁ A CORREÇÃO ---
+            # Espera 1 segundo para o Discord gerar a mensagem de sistema
+            await asyncio.sleep(1) 
             try:
-                async for msg in thread.history(limit=5):
-                    if msg.type == discord.MessageType.recipient_add:
+                # Procura nas últimas 10 mensagens qualquer mensagem de sistema e apaga
+                async for msg in thread.history(limit=10):
+                    if msg.is_system(): # Apaga "Adicionou Fulano", "Iniciou Thread", "Pinou mensagem"
                         await msg.delete()
             except:
-                pass # Se não der pra apagar (falta de permissão), ignora.
+                pass 
+            # ---------------------------
 
-            # Botão de ir para o ticket
             view_jump = discord.ui.View()
             view_jump.add_item(discord.ui.Button(label="Ir para o Ticket", url=thread.jump_url, emoji="🔗"))
             await interaction.response.send_message(content="✅ | Seu ticket foi aberto com sucesso!", view=view_jump, ephemeral=True)
 
-            # Embed DENTRO do ticket
             embed = discord.Embed(
                 description="Seja bem-vindo(a) ao painel de atendimento. Informamos que, dependendo do horário em que este ticket foi aberto, o tempo de resposta pode variar.",
-                color=discord.Color.dark_grey() # Voltei para cinza escuro no painel interno para contraste
+                color=discord.Color.dark_grey()
             )
             embed.add_field(name="Horário de Abertura:", value=f"<t:{int(datetime.datetime.now().timestamp())}:F>")
             
@@ -164,10 +142,9 @@ class TicketDropdown(discord.ui.Select):
             await thread.send(content=mencao, embed=embed, view=TicketControlView())
 
         except Exception as e:
-            # Se der erro, remove da lista pra ele tentar de novo
             if interaction.user.id in tickets_abertos:
                 tickets_abertos.remove(interaction.user.id)
-            print(f"Erro ao criar ticket: {e}")
+            print(f"Erro: {e}")
             try: await interaction.response.send_message(f"❌ Erro: {e}", ephemeral=True)
             except: pass
 
@@ -182,8 +159,6 @@ async def on_ready():
     bot.add_view(MainView())
     bot.add_view(TicketControlView())
     await bot.tree.sync()
-
-# --- COMANDOS ---
 
 @bot.tree.command(name="configurar_topicos", description="Define os canais de cada ticket")
 async def configurar_topicos(interaction: discord.Interaction, canal_suporte: discord.TextChannel, canal_reembolso: discord.TextChannel, canal_evento: discord.TextChannel, canal_vagas: discord.TextChannel):
@@ -208,7 +183,6 @@ async def criar_painel(interaction: discord.Interaction, staff_1: discord.Role, 
         configuracao["cargos"]["ver"] = c_ver
         configuracao["cargos"]["finalizar"] = c_fin
 
-        # DESCRIÇÃO EXATA DA FOTO 1
         descricao = (
             "👉 Abra ticket com o que você precisa abaixo com as informações de guia.\n\n"
             "☞ **TICKET SUPORTE**\n"
@@ -222,7 +196,6 @@ async def criar_painel(interaction: discord.Interaction, staff_1: discord.Role, 
             "→ Evite discussões!"
         )
         
-        # Cor Azul na lateral e imagem
         embed = discord.Embed(title="WS TICKET", description=descricao, color=discord.Color.blue())
         embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg?ex=6990bea7&is=698f6d27&hm=ab8e0065381fdebb51ecddda1fe599a7366aa8dfe622cfeb7f720b7fadedd896&")
         
@@ -238,4 +211,4 @@ async def criar_painel(interaction: discord.Interaction, staff_1: discord.Role, 
         await interaction.followup.send(f"❌ Erro: `{str(e)}`", ephemeral=True)
 
 if TOKEN: bot.run(TOKEN)
-            
+    
