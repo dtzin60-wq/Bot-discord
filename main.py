@@ -18,7 +18,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # --- MEMÓRIA ---
 configuracao = {
     "cargos": {"ver": [], "finalizar": []},
-    "canais": {"Suporte": None, "Reembolso": None, "Evento": None, "Vagas": None, "Filas": []},
+    "canais": {"Filas": []}, # Apenas canais de aposta
     "economia": {},
     "loja": {},
     "blacklist": []
@@ -27,7 +27,7 @@ tickets_abertos = []
 mediadores_ativos = [] 
 
 # ==============================================================================
-# 1. SISTEMA DE FILA / LOBBY (SEM EMOJI NO GEL NORMAL)
+# 1. SISTEMA DE FILA / LOBBY (1v1)
 # ==============================================================================
 
 class FilaLobbyView(discord.ui.View):
@@ -42,11 +42,8 @@ class FilaLobbyView(discord.ui.View):
 
     def configurar_botoes(self):
         self.clear_items()
-        # Botão Gel Normal (SEM EMOJI)
         self.add_item(discord.ui.Button(label="Gel Normal", style=discord.ButtonStyle.secondary, custom_id=f"join_normal"))
-        # Botão Gel Infinito (COM EMOJI)
         self.add_item(discord.ui.Button(label="Gel Infinito", style=discord.ButtonStyle.secondary, emoji="♾️", custom_id=f"join_infinito"))
-        # Botão Sair
         self.add_item(discord.ui.Button(label="Sair da Fila", style=discord.ButtonStyle.danger, emoji="✖️", custom_id=f"leave_fila"))
 
     async def atualizar_embed(self, interaction):
@@ -78,7 +75,8 @@ class FilaLobbyView(discord.ui.View):
                 mencoes += f"{u.mention} "
                 tickets_abertos.append(uid)
         
-        for c in configuracao["cargos"]["ver"]: mencoes += f"{c.mention} "
+        # Marca staff configurada (opcional, se houver)
+        for c in configuracao["cargos"].get("ver", []): mencoes += f"{c.mention} "
 
         embed = discord.Embed(
             title="🔥 PARTIDA INICIADA",
@@ -111,7 +109,6 @@ class FilaLobbyView(discord.ui.View):
             return await interaction.response.send_message("❌ Fila cheia!", ephemeral=True)
 
         texto_escolha = ""
-        # SEM EMOJI NO TEXTO DO NORMAL TAMBÉM
         if cid == "join_normal": texto_escolha = "Gel Normal"
         elif cid == "join_infinito": texto_escolha = "♾️ Gel Infinito"
 
@@ -141,8 +138,6 @@ class CriarFilaModal(discord.ui.Modal, title="Criar Fila (1v1)"):
         
         view = FilaLobbyView(self.nome.value, self.valor.value)
         await interaction.channel.send(embed=embed, view=view)
-        
-        # MENSAGEM ALTERADA AQUI
         await interaction.followup.send("Criando fila...", ephemeral=True)
 
 # ==============================================================================
@@ -216,25 +211,6 @@ class MatchControlView(discord.ui.View):
     async def c(self, i, b):
         if i.user.guild_permissions.manage_messages: await i.channel.delete()
 
-class TicketControlView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None)
-    @discord.ui.button(label="Finalizar", style=discord.ButtonStyle.success, emoji="✅", custom_id="btn_fin_main")
-    async def f(self, i, b):
-        u = i.user
-        perm = u.id == DONO_ID or u.guild_permissions.manage_messages
-        if not perm:
-            for c in configuracao["cargos"]["finalizar"]:
-                if c in u.roles: perm = True; break
-        if perm: await i.channel.delete()
-        else: await i.response.send_message("❌ Sem permissão.", ephemeral=True)
-    @discord.ui.button(label="Assumir", style=discord.ButtonStyle.secondary, emoji="🛡️", custom_id="btn_ass_main")
-    async def a(self, i, b): await i.channel.send(f"{i.user.mention} assumiu!"); await i.response.send_message("Ok", ephemeral=True)
-    @discord.ui.button(label="Painel Staff", style=discord.ButtonStyle.secondary, emoji="🛠️", custom_id="btn_stf_main")
-    async def st(self, i, b):
-        if i.user.guild_permissions.manage_messages: await i.response.send_message("Menu Staff", view=StaffActionsView(), ephemeral=True)
-    @discord.ui.button(label="Sair", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="btn_out_main")
-    async def s(self, i, b): await i.channel.remove_user(i.user)
-
 class RenomearModal(discord.ui.Modal, title="Renomear"):
     nome = discord.ui.TextInput(label="Novo Nome")
     async def on_submit(self, i): await i.channel.edit(name=self.nome.value); await i.response.send_message("Feito!", ephemeral=True)
@@ -242,7 +218,7 @@ class RenomearModal(discord.ui.Modal, title="Renomear"):
 class AddUserModal(discord.ui.Modal, title="Add User"):
     uid = discord.ui.TextInput(label="ID")
     async def on_submit(self, i): 
-        try: u = await i.guild.fetch_member(int(self.uid.value)); await i.channel.add_user(u); await i.response.send_message("Add!", ephemeral=True)
+        try: u = await i.guild.fetch_member(int(self.uid.value)); await i.channel.add_user(u); await i.channel.send(f"Adicionado: {u.mention}"); await i.response.send_message("Add!", ephemeral=True)
         except: await i.response.send_message("Erro ID", ephemeral=True)
 
 class StaffActionsDropdown(discord.ui.Select):
@@ -258,30 +234,6 @@ class StaffActionsView(discord.ui.View):
     def __init__(self): super().__init__(timeout=60); self.add_item(StaffActionsDropdown())
 
 # ==============================================================================
-# 4. PAINEL PRINCIPAL (TICKETS)
-# ==============================================================================
-class TicketDropdown(discord.ui.Select):
-    def __init__(self):
-        options = [discord.SelectOption(label="Suporte", emoji="🛠️"), discord.SelectOption(label="Reembolso", emoji="💰"), discord.SelectOption(label="Receber Evento", emoji="💫"), discord.SelectOption(label="Vagas de Mediador", emoji="👑")]
-        super().__init__(placeholder="Selecione uma função", options=options, custom_id="main_drop")
-    async def callback(self, i):
-        try:
-            mapa = {"Suporte": "Suporte", "Reembolso": "Reembolso", "Receber Evento": "Evento", "Vagas de Mediador": "Vagas"}
-            chave = mapa[self.values[0]]
-            canal = configuracao["canais"].get(chave) or i.channel
-            th = await canal.create_thread(name=f"{chave}-{i.user.name}", type=discord.ChannelType.private_thread)
-            await th.add_user(i.user); tickets_abertos.append(i.user.id)
-            embed = discord.Embed(description="Aguarde o atendimento.", color=discord.Color.dark_grey())
-            embed.add_field(name="Horário:", value=f"<t:{int(datetime.datetime.now().timestamp())}:F>")
-            mencao = f"{i.user.mention} " + " ".join([c.mention for c in configuracao["cargos"]["ver"]])
-            await th.send(mencao, embed=embed, view=TicketControlView())
-            await i.response.send_message(f"Ticket aberto: <#{th.id}>", ephemeral=True)
-        except: pass
-
-class MainView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None); self.add_item(TicketDropdown())
-
-# ==============================================================================
 # 5. COMANDOS
 # ==============================================================================
 
@@ -291,28 +243,6 @@ async def filamediador(interaction: discord.Interaction):
     embed = discord.Embed(title="Painel da fila controladora", description="**Entre na fila para começar a mediar suas filas**\n\nNenhum mediador na fila.", color=discord.Color.from_rgb(147, 112, 219)) 
     await interaction.channel.send(embed=embed, view=MediadorQueueView())
     await interaction.response.send_message("✅ Painel Mediador criado!", ephemeral=True)
-
-@bot.tree.command(name="criar_painel", description="Painel WS TICKET (4 Cargos)")
-@app_commands.describe(staff_1="Cargo ver 1", finalizar_1="Cargo fim 1")
-async def criar_painel(interaction: discord.Interaction, staff_1: discord.Role, finalizar_1: discord.Role):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.user.id != DONO_ID: return await interaction.followup.send("❌ Apenas o dono.")
-    configuracao["cargos"]["ver"] = [staff_1]
-    configuracao["cargos"]["finalizar"] = [finalizar_1]
-    descricao = ("👉 Abra ticket com o que você precisa abaixo com as informações de guia.\n\n"
-        "☞ **TICKET SUPORTE**\n"
-        "tire suas dúvidas aqui no ticket suporte, fale com nossos suportes e seja direto com o seu problema.\n\n"
-        "☞ **TICKET REEMBOLSO**\n"
-        "receba seu reembolso aqui, seja direto e mande comprovante do pagamento.\n\n"
-        "☞ **TICKET RECEBE EVENTO**\n"
-        "Receba seu evento completos, espera nossos suportes válida seu evento.\n\n"
-        "☞ **TICKET VAGA MEDIADOR**\n"
-        "seja mediador da org WS, abra ticket e espera nossos suportes recruta.\n\n"
-        "→ Evite discussões!")
-    embed = discord.Embed(title="WS TICKET", description=descricao, color=discord.Color.blue())
-    embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
-    await interaction.channel.send(embed=embed, view=MainView())
-    await interaction.followup.send("✅ Painel enviado!", ephemeral=True)
 
 @bot.tree.command(name="criarfila", description="Cria Lobby 1v1 (Fixo 2 Jogadores)")
 async def criarfila(i: discord.Interaction):
@@ -353,33 +283,18 @@ async def blacklist(i: discord.Interaction, user: discord.User):
     configuracao["blacklist"].append(user.id)
     await i.response.send_message(f"🚫 {user.mention} Blacklisted", ephemeral=True)
 
-@bot.tree.command(name="configurar_tickets_gerais", description="Canais do Painel Principal")
-async def cfg_g(i: discord.Interaction, suporte: discord.TextChannel, reembolso: discord.TextChannel, evento: discord.TextChannel, vagas: discord.TextChannel):
-    if i.user.id != DONO_ID: return
-      configuracao["canais"].update({"Suporte":
-suporte, "Reembolso": reembolso, "Evento":
-evento, "Vagas": vagas})
-    await i.response.send_message("✅
-Configurado!", ephemeral=True)
-
-@bot.tree.command(name="configurar_canais_filas",
-description="3 Canais de Apostas (Sorteio)")
-async def cfg_f(i: discord.Interaction,
-c1: discord.TextChannel, c2:
-discord.TextChannel=None, c3:
-discord.TextChannel=None):
+@bot.tree.command(name="configurar_canais_filas", description="3 Canais de Apostas (Sorteio)")
+async def cfg_f(i: discord.Interaction, c1: discord.TextChannel, c2: discord.TextChannel=None, c3: discord.TextChannel=None):
     if i.user.id != DONO_ID: return
     l = [c1]
     if c2: l.append(c2)
     if c3: l.append(c3)
     configuracao["canais"]["Filas"] = l
-    await i.response.send_message(f"✅ {len(l)}
-canais de fila definidos.", ephemeral=True)
+    await i.response.send_message(f"✅ {len(l)} canais de fila definidos.", ephemeral=True)
 
 @bot.event
 async def on_message(message):
-    if message.is_system() and
-isinstance(message.channel, discord.Thread):
+    if message.is_system() and isinstance(message.channel, discord.Thread):
         try: await message.delete()
         except: pass
     await bot.process_commands(message)
@@ -390,4 +305,4 @@ async def on_ready():
     print(f"✅ Bot Online: {bot.user}")
 
 if TOKEN: bot.run(TOKEN)
-    
+                
