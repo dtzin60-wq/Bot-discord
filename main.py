@@ -18,22 +18,84 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # --- MEMÓRIA ---
 configuracao = {
     "cargos": {"ver": [], "finalizar": []},
-    "canais": {"Filas": []}, # Apenas canais de aposta
-    "economia": {},
-    "loja": {},
-    "blacklist": []
+    "canais": {"Filas": []}, 
+    "contador_salas": 0 
 }
 tickets_abertos = []
-mediadores_ativos = [] 
+mediadores_ativos = []
 
 # ==============================================================================
-# 1. SISTEMA DE FILA / LOBBY (1v1)
+# 1. SISTEMA DE CONFIRMAÇÃO (DENTRO DO TICKET)
+# ==============================================================================
+
+class PartidaConfirmacaoView(discord.ui.View):
+    def __init__(self, jogadores, modo, valor):
+        super().__init__(timeout=None)
+        self.jogadores = jogadores
+        self.modo = modo
+        self.valor = valor
+        self.confirmados = []
+
+    async def atualizar_status(self, interaction):
+        if len(self.confirmados) >= len(self.jogadores):
+            # TODOS CONFIRMARAM -> INICIAR
+            configuracao["contador_salas"] += 1
+            num = configuracao["contador_salas"]
+            
+            # Define nome (Mobile ou Emulador)
+            tipo = "emulador" if "emulador" in self.modo.lower() else "mobile"
+            await interaction.channel.edit(name=f"{tipo}-{num}")
+            
+            # Atualiza Embed de Confirmação para Verde
+            embed_c = interaction.message.embeds[0]
+            embed_c.color = discord.Color.green()
+            embed_c.title = "✅ PARTIDA CONFIRMADA"
+            await interaction.message.edit(embed=embed_c, view=None)
+
+            # Regras e Pagamento
+            embed_reg = discord.Embed(title="✨ SEJAM MUITO BEM-VINDOS ✨", description="• Regras adicionais podem ser combinadas.\n• Se a regra não existir no regulamento, tire print do acordo.", color=discord.Color.gold())
+            await interaction.channel.send(embed=embed_reg)
+
+            embed_pag = discord.Embed(title="🔥 ÁREA DE PAGAMENTO", description=f"**Valor:** {self.valor}\n\nEnvie o PIX e comprovante abaixo.\nO Mediador irá validar.", color=discord.Color.green())
+            await interaction.channel.send(embed=embed_pag, view=MatchControlView())
+
+    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success, custom_id="btn_conf")
+    async def confirmar(self, interaction, button):
+        if interaction.user.id not in self.jogadores: return await interaction.response.send_message("❌ Você não está na partida.", ephemeral=True)
+        if interaction.user.id in self.confirmados: return await interaction.response.send_message("✅ Já confirmou.", ephemeral=True)
+
+        self.confirmados.append(interaction.user.id)
+        await interaction.response.send_message(f"✅ **{interaction.user.display_name}** confirmou!", ephemeral=False)
+        await self.atualizar_status(interaction)
+
+    @discord.ui.button(label="Recusar", style=discord.ButtonStyle.danger, custom_id="btn_recus")
+    async def recusar(self, interaction, button):
+        if interaction.user.id not in self.jogadores: return await interaction.response.send_message("❌ Não está na partida.", ephemeral=True)
+        await interaction.channel.send(f"❌ **{interaction.user.display_name}** recusou. Cancelando...")
+        await asyncio.sleep(3)
+        await interaction.channel.delete()
+
+    @discord.ui.button(label="Combinar Regras", style=discord.ButtonStyle.secondary, emoji="🏳️", custom_id="btn_regras")
+    async def regras(self, interaction, button):
+        await interaction.response.send_message(f"📢 {interaction.user.mention} quer combinar regras!", ephemeral=False)
+
+class MatchControlView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="Validar Pagamento", style=discord.ButtonStyle.success, emoji="💸", custom_id="btn_val_pay")
+    async def v(self, i, b):
+        if i.user.guild_permissions.manage_messages or i.user.id == DONO_ID: await i.response.send_message(f"✅ Validado por {i.user.mention}!", ephemeral=False)
+    @discord.ui.button(label="Fechar Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="btn_close_pay")
+    async def c(self, i, b):
+        if i.user.guild_permissions.manage_messages: await i.channel.delete()
+
+# ==============================================================================
+# 2. SISTEMA DE LOBBY (FILA)
 # ==============================================================================
 
 class FilaLobbyView(discord.ui.View):
-    def __init__(self, modo: str, valor: str):
+    def __init__(self, modo: str, valor: str, limite: int):
         super().__init__(timeout=None)
-        self.limite = 2 
+        self.limite = limite
         self.modo = modo
         self.valor = valor
         self.jogadores = [] 
@@ -42,48 +104,56 @@ class FilaLobbyView(discord.ui.View):
 
     def configurar_botoes(self):
         self.clear_items()
-        self.add_item(discord.ui.Button(label="Gel Normal", style=discord.ButtonStyle.secondary, custom_id=f"join_normal"))
-        self.add_item(discord.ui.Button(label="Gel Infinito", style=discord.ButtonStyle.secondary, emoji="♾️", custom_id=f"join_infinito"))
-        self.add_item(discord.ui.Button(label="Sair da Fila", style=discord.ButtonStyle.danger, emoji="✖️", custom_id=f"leave_fila"))
+        # Se 1v1 (Limite 2) -> Botões de Gel (SEM EMOJI)
+        if self.limite == 2:
+            self.add_item(discord.ui.Button(label="Gel Normal", style=discord.ButtonStyle.secondary, custom_id="join_normal"))
+            self.add_item(discord.ui.Button(label="Gel Infinito", style=discord.ButtonStyle.secondary, custom_id="join_infinito"))
+        else:
+            # Se Time (Limite > 2) -> Botão Entrar
+            self.add_item(discord.ui.Button(label="Entrar na fila", style=discord.ButtonStyle.secondary, custom_id="join_geral"))
+        
+        # Botão Sair
+        self.add_item(discord.ui.Button(label="Sair da Fila", style=discord.ButtonStyle.danger, custom_id="leave_fila"))
 
     async def atualizar_embed(self, interaction):
-        if not self.jogadores:
-            texto_jogadores = "Nenhum jogador na fila"
+        if not self.jogadores: texto = "Nenhum jogador na fila"
         else:
-            texto_jogadores = ""
+            texto = ""
             for uid in self.jogadores:
                 escolha = self.dados_visuais.get(uid, "Entrou")
-                texto_jogadores += f"<@{uid}> | {escolha}\n"
+                texto += f"<@{uid}> | {escolha}\n"
 
         embed = interaction.message.embeds[0]
-        embed.set_field_at(2, name="👥 | Jogadores", value=f"{texto_jogadores}", inline=False)
+        embed.set_field_at(2, name="👥 | Jogadores", value=texto, inline=False)
         await interaction.message.edit(embed=embed, view=self)
 
-    async def iniciar_partida(self, interaction):
+    async def iniciar_confirmacao(self, interaction):
+        # Sorteia canal
         canais = configuracao["canais"].get("Filas", [])
         canal_destino = random.choice(canais) if canais else interaction.channel
         
-        await interaction.channel.send(f"✅ **Fila Cheia!** Abrindo ticket em {canal_destino.mention}...", delete_after=5)
-        
-        thread = await canal_destino.create_thread(name=f"MATCH-{self.modo}-{len(tickets_abertos)}", type=discord.ChannelType.private_thread)
+        # REMOVIDO: Mensagem "Criando sala..." (Agora é silencioso)
+
+        # Cria ticket
+        thread = await canal_destino.create_thread(name="aguardando-confirmacao", type=discord.ChannelType.private_thread)
         
         mencoes = ""
+        objs_jogadores = []
         for uid in self.jogadores:
             u = interaction.guild.get_member(uid)
             if u:
                 await thread.add_user(u)
                 mencoes += f"{u.mention} "
+                objs_jogadores.append(u)
                 tickets_abertos.append(uid)
         
-        # Marca staff configurada (opcional, se houver)
-        for c in configuracao["cargos"].get("ver", []): mencoes += f"{c.mention} "
-
-        embed = discord.Embed(
-            title="🔥 PARTIDA INICIADA",
-            description=f"**Modo:** {self.modo}\n**Valor:** {self.valor}\n\n👉 Enviem o PIX e comprovantes aqui.\nO Mediador irá validar.",
-            color=discord.Color.green()
-        )
-        await thread.send(content=mencoes, embed=embed, view=MatchControlView())
+        embed_conf = discord.Embed(title="Aguardando Confirmações", color=discord.Color.light_grey())
+        embed_conf.set_thumbnail(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
+        embed_conf.add_field(name="👑 Modo:", value=self.modo, inline=False)
+        embed_conf.add_field(name="💸 Valor:", value=self.valor, inline=False)
+        embed_conf.add_field(name="⚡ Jogadores:", value="\n".join([u.mention for u in objs_jogadores]), inline=False)
+        
+        await thread.send(content=f"{mencoes} Confirmem a partida!", embed=embed_conf, view=PartidaConfirmacaoView(self.jogadores, self.modo, self.valor))
         
         self.jogadores = []
         self.dados_visuais = {}
@@ -97,65 +167,76 @@ class FilaLobbyView(discord.ui.View):
             if uid in self.jogadores:
                 self.jogadores.remove(uid)
                 if uid in self.dados_visuais: del self.dados_visuais[uid]
-                await interaction.response.defer()
-                await self.atualizar_embed(interaction)
-            else:
-                await interaction.response.send_message("❌ Você não está na fila.", ephemeral=True)
+                await interaction.response.defer(); await self.atualizar_embed(interaction)
+            else: await interaction.response.send_message("❌ Não está na fila.", ephemeral=True)
             return True
 
-        if uid in self.jogadores:
-            return await interaction.response.send_message("❌ Você já está nesta fila!", ephemeral=True)
-        if len(self.jogadores) >= self.limite:
-            return await interaction.response.send_message("❌ Fila cheia!", ephemeral=True)
+        if uid in self.jogadores: return await interaction.response.send_message("❌ Já está na fila!", ephemeral=True)
+        if len(self.jogadores) >= self.limite: return await interaction.response.send_message("❌ Fila cheia!", ephemeral=True)
 
-        texto_escolha = ""
-        if cid == "join_normal": texto_escolha = "Gel Normal"
-        elif cid == "join_infinito": texto_escolha = "♾️ Gel Infinito"
+        escolha = "Entrou"
+        if cid == "join_normal": escolha = "Gel Normal"
+        elif cid == "join_infinito": escolha = "Gel Infinito"
 
         self.jogadores.append(uid)
-        self.dados_visuais[uid] = texto_escolha 
+        self.dados_visuais[uid] = escolha
         
         await interaction.response.defer()
         await self.atualizar_embed(interaction)
 
-        if len(self.jogadores) >= self.limite:
-            await self.iniciar_partida(interaction)
+        if len(self.jogadores) >= self.limite: await self.iniciar_confirmacao(interaction)
         return True
 
-class CriarFilaModal(discord.ui.Modal, title="Criar Fila (1v1)"):
-    nome = discord.ui.TextInput(label="Nome (Ex: 1v1 | Mobile)", placeholder="Digite o modo...")
-    valor = discord.ui.TextInput(label="Valor (Ex: R$ 1,00)", placeholder="Digite o valor...")
+# ==============================================================================
+# 3. GERAÇÃO (15 FILAS)
+# ==============================================================================
 
-    async def on_submit(self, interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        embed = discord.Embed(title=f"{self.nome.value} | WS APOSTAS", color=discord.Color.blue())
-        embed.add_field(name="👑 | Modo", value=self.nome.value, inline=False)
-        embed.add_field(name="💸 | Valor", value=self.valor.value, inline=False)
+class SelecionarFilaSelect(discord.ui.Select):
+    def __init__(self, modo, limite):
+        valores = ["1,00", "2,00", "3,00", "4,00", "5,00", "10,00", "15,00", "20,00", "25,00", "30,00", "40,00", "50,00", "60,00", "80,00", "100,00"]
+        options = [discord.SelectOption(label=f"R$ {v}", value=v) for v in valores]
+        super().__init__(placeholder="Selecione o valor para gerar o painel", options=options)
+        self.modo = modo
+        self.limite = limite
+
+    async def callback(self, interaction: discord.Interaction):
+        val = self.values[0]
+        embed = discord.Embed(title=f"{self.modo} | WS APOSTAS", color=discord.Color.blue())
+        embed.add_field(name="👑 | Modo", value=self.modo, inline=False)
+        embed.add_field(name="💸 | Valor", value=f"R$ {val}", inline=False)
         embed.add_field(name="👥 | Jogadores", value="Nenhum jogador na fila", inline=False)
-        
         embed.set_image(url="https://cdn.discordapp.com/attachments/1465403221936963655/1465775330999533773/file_00000000d78871f596a846e9ca08d27c.jpg")
         
-        view = FilaLobbyView(self.nome.value, self.valor.value)
-        await interaction.channel.send(embed=embed, view=view)
-        await interaction.followup.send("Criando fila...", ephemeral=True)
+        await interaction.channel.send(embed=embed, view=FilaLobbyView(self.modo, f"R$ {val}", self.limite))
+        await interaction.response.send_message(f"Painel de R$ {val} gerado!", ephemeral=True)
+
+class GeradorFilasView(discord.ui.View):
+    def __init__(self, modo, limite):
+        super().__init__()
+        self.add_item(SelecionarFilaSelect(modo, limite))
+
+class CriarFilaModal(discord.ui.Modal, title="Gerador de Filas"):
+    nome_modo = discord.ui.TextInput(label="Nome do Modo", placeholder="Ex: 1v1 Mobile")
+    qtd = discord.ui.TextInput(label="Jogadores por Time", placeholder="2", max_length=2)
+
+    async def on_submit(self, interaction):
+        try:
+            limite = int(self.qtd.value)
+            await interaction.response.send_message(f"✅ Gerando seletor para **{self.nome_modo.value}**...", view=GeradorFilasView(self.nome_modo.value, limite), ephemeral=True)
+        except: await interaction.response.send_message("Erro no número.", ephemeral=True)
 
 # ==============================================================================
-# 2. SISTEMA DE FILA DE MEDIADORES
+# 4. MEDIADOR (MANTIDO)
 # ==============================================================================
 
 class RemoverMediadorModal(discord.ui.Modal, title="Remover Mediador"):
-    user_id = discord.ui.TextInput(label="ID do Mediador", placeholder="Cole o ID aqui...")
-    async def on_submit(self, interaction: discord.Interaction):
+    user_id = discord.ui.TextInput(label="ID do Mediador")
+    async def on_submit(self, i):
         try:
             uid = int(self.user_id.value)
-            if uid in mediadores_ativos:
-                mediadores_ativos.remove(uid)
-                view = MediadorQueueView()
-                await view.atualizar_embed(interaction)
-                await interaction.followup.send(f"✅ Mediador <@{uid}> removido da fila!", ephemeral=True)
-            else: await interaction.response.send_message("❌ Esse ID não está na fila.", ephemeral=True)
-        except: await interaction.response.send_message("❌ ID inválido.", ephemeral=True)
+            if uid in mediadores_ativos: mediadores_ativos.remove(uid); await MediadorQueueView().atualizar_embed(i); await i.followup.send(f"✅ Removido <@{uid}>", ephemeral=True)
+            else: await i.response.send_message("❌ Não encontrado.", ephemeral=True)
+        except: await i.response.send_message("❌ Erro.", ephemeral=True)
 
 class MediadorQueueView(discord.ui.View):
     def __init__(self):
@@ -165,132 +246,48 @@ class MediadorQueueView(discord.ui.View):
         self.add_item(discord.ui.Button(label="Remover Mediador", style=discord.ButtonStyle.secondary, emoji="⚙️", custom_id="med_kick"))
         self.add_item(discord.ui.Button(label="Painel Staff", style=discord.ButtonStyle.secondary, emoji="⚙️", custom_id="med_staff"))
 
-    async def enviar_confirmacao(self, interaction, entrou: bool):
-        embed = discord.Embed(description=f"✅ **Ação realizada com sucesso!**\n\n{interaction.user.mention}, a sua operação foi concluída com êxito.\n↪ Você {'entrou na' if entrou else 'saiu da'} fila com sucesso.", color=discord.Color.from_rgb(43, 45, 49))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
     async def atualizar_embed(self, interaction):
-        if not mediadores_ativos: texto_lista = "Nenhum mediador na fila."
-        else:
-            texto_lista = ""
-            for i, uid in enumerate(mediadores_ativos, 1): texto_lista += f"**{i}** • <@{uid}> `{uid}`\n"
-
+        txt = "Nenhum mediador na fila." if not mediadores_ativos else "".join([f"**{i}** • <@{uid}> `{uid}`\n" for i, uid in enumerate(mediadores_ativos, 1)])
         embed = interaction.message.embeds[0]
-        embed.description = f"**Entre na fila para começar a mediar suas filas**\n\n{texto_lista}"
+        embed.description = f"**Entre na fila para começar a mediar suas filas**\n\n{txt}"
         if interaction.response.is_done(): await interaction.message.edit(embed=embed, view=self)
         else: await interaction.response.edit_message(embed=embed, view=self)
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        cid = interaction.data["custom_id"]
-        uid = interaction.user.id
+    async def interaction_check(self, i):
+        cid, uid = i.data["custom_id"], i.user.id
         if cid == "med_join":
-            if uid in mediadores_ativos: await interaction.response.send_message("❌ Você já está na fila.", ephemeral=True)
-            else: mediadores_ativos.append(uid); await self.enviar_confirmacao(interaction, True); await self.atualizar_embed(interaction)
+            if uid in mediadores_ativos: await i.response.send_message("❌ Já está na fila.", ephemeral=True)
+            else: mediadores_ativos.append(uid); await self.atualizar_embed(i)
         elif cid == "med_leave":
-            if uid in mediadores_ativos: mediadores_ativos.remove(uid); await self.enviar_confirmacao(interaction, False); await self.atualizar_embed(interaction)
-            else: await interaction.response.send_message("❌ Você não está na fila.", ephemeral=True)
+            if uid in mediadores_ativos: mediadores_ativos.remove(uid); await self.atualizar_embed(i)
+            else: await i.response.send_message("❌ Não está na fila.", ephemeral=True)
         elif cid == "med_kick":
-            if interaction.user.id == DONO_ID or interaction.user.guild_permissions.administrator: await interaction.response.send_modal(RemoverMediadorModal())
-            else: await interaction.response.send_message("❌ Apenas Admins.", ephemeral=True)
-        elif cid == "med_staff":
-            if interaction.user.guild_permissions.manage_messages: await interaction.response.send_message("Menu Staff", view=StaffActionsView(), ephemeral=True)
-            else: await interaction.response.send_message("❌ Apenas Staff.", ephemeral=True)
+            if i.user.id == DONO_ID: await i.response.send_modal(RemoverMediadorModal())
+            else: await i.response.send_message("❌ Apenas Dono.", ephemeral=True)
         return False
-
-# ==============================================================================
-# 3. CONTROLES DE TICKET E STAFF
-# ==============================================================================
-
-class MatchControlView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None)
-    @discord.ui.button(label="Validar Pagamento", style=discord.ButtonStyle.success, emoji="💸", custom_id="btn_v_match")
-    async def v(self, i, b):
-        if i.user.guild_permissions.manage_messages or i.user.id == DONO_ID:
-            await i.response.send_message(f"✅ **Pagamento Validado por {i.user.mention}!**", ephemeral=False)
-    @discord.ui.button(label="Fechar", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="btn_c_match")
-    async def c(self, i, b):
-        if i.user.guild_permissions.manage_messages: await i.channel.delete()
-
-class RenomearModal(discord.ui.Modal, title="Renomear"):
-    nome = discord.ui.TextInput(label="Novo Nome")
-    async def on_submit(self, i): await i.channel.edit(name=self.nome.value); await i.response.send_message("Feito!", ephemeral=True)
-
-class AddUserModal(discord.ui.Modal, title="Add User"):
-    uid = discord.ui.TextInput(label="ID")
-    async def on_submit(self, i): 
-        try: u = await i.guild.fetch_member(int(self.uid.value)); await i.channel.add_user(u); await i.channel.send(f"Adicionado: {u.mention}"); await i.response.send_message("Add!", ephemeral=True)
-        except: await i.response.send_message("Erro ID", ephemeral=True)
-
-class StaffActionsDropdown(discord.ui.Select):
-    def __init__(self):
-        options = [discord.SelectOption(label="Renomear Ticket", emoji="📝"), discord.SelectOption(label="Adicionar Membro", emoji="👤"), discord.SelectOption(label="Notificar", emoji="🔔")]
-        super().__init__(placeholder="Selecione", options=options)
-    async def callback(self, i):
-        if self.values[0] == "Renomear Ticket": await i.response.send_modal(RenomearModal())
-        elif self.values[0] == "Adicionar Membro": await i.response.send_modal(AddUserModal())
-        elif self.values[0] == "Notificar": await i.channel.send(f"{i.user.mention} chamando! @here"); await i.response.send_message("Ok", ephemeral=True)
-
-class StaffActionsView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=60); self.add_item(StaffActionsDropdown())
 
 # ==============================================================================
 # 5. COMANDOS
 # ==============================================================================
 
-@bot.tree.command(name="filamediador", description="Painel da Fila Controladora (Mediadores)")
-async def filamediador(interaction: discord.Interaction):
-    if interaction.user.id != DONO_ID: return await interaction.response.send_message("❌ Apenas o dono.", ephemeral=True)
-    embed = discord.Embed(title="Painel da fila controladora", description="**Entre na fila para começar a mediar suas filas**\n\nNenhum mediador na fila.", color=discord.Color.from_rgb(147, 112, 219)) 
-    await interaction.channel.send(embed=embed, view=MediadorQueueView())
-    await interaction.response.send_message("✅ Painel Mediador criado!", ephemeral=True)
-
-@bot.tree.command(name="criarfila", description="Cria Lobby 1v1 (Fixo 2 Jogadores)")
+@bot.tree.command(name="criarfila", description="Gera painel de filas")
 async def criarfila(i: discord.Interaction):
     if i.user.id != DONO_ID: return
     await i.response.send_modal(CriarFilaModal())
 
-# OUTROS COMANDOS
-@bot.tree.command(name="darcoin", description="💰 Adiciona coins")
-async def darcoin(i: discord.Interaction, user: discord.User, qtd: int):
+@bot.tree.command(name="filamediador", description="Painel Mediador")
+async def filamediador(i: discord.Interaction):
     if i.user.id != DONO_ID: return
-    val = configuracao["economia"].get(user.id, 0) + qtd
-    configuracao["economia"][user.id] = val
-    await i.response.send_message(f"✅ {qtd} coins para {user.mention}", ephemeral=True)
-
-@bot.tree.command(name="perfil", description="👤 Ver saldo")
-async def perfil(i: discord.Interaction, user: discord.User = None):
-    t = user or i.user
-    val = configuracao["economia"].get(t.id, 0)
-    await i.response.send_message(embed=discord.Embed(title=f"Perfil {t.name}", description=f"💰 Coins: {val}", color=discord.Color.gold()))
-
-@bot.tree.command(name="addproduto", description="Adicionar a loja")
-async def addprod(i: discord.Interaction, nome: str, valor: int, desc: str):
-    if i.user.id != DONO_ID: return
-    configuracao["loja"][nome] = {"valor": valor, "desc": desc}
-    await i.response.send_message("✅ Adicionado!", ephemeral=True)
-
-@bot.tree.command(name="criarloja", description="Mostra loja")
-async def criarloja(i: discord.Interaction):
-    if not configuracao["loja"]: return await i.response.send_message("Vazia", ephemeral=True)
-    e = discord.Embed(title="🛒 LOJA WS", color=discord.Color.purple())
-    for n,d in configuracao["loja"].items(): e.add_field(name=f"{n} - {d['valor']}", value=d['desc'], inline=False)
-    await i.channel.send(embed=e)
+    embed = discord.Embed(title="Painel da fila controladora", description="**Entre na fila para começar a mediar suas filas**\n\nNenhum mediador na fila.", color=discord.Color.purple()) 
+    await i.channel.send(embed=embed, view=MediadorQueueView())
     await i.response.send_message("✅", ephemeral=True)
 
-@bot.tree.command(name="blacklist", description="Banir do bot")
-async def blacklist(i: discord.Interaction, user: discord.User):
-    if i.user.id != DONO_ID: return
-    configuracao["blacklist"].append(user.id)
-    await i.response.send_message(f"🚫 {user.mention} Blacklisted", ephemeral=True)
-
-@bot.tree.command(name="configurar_canais_filas", description="3 Canais de Apostas (Sorteio)")
+@bot.tree.command(name="configurar_canais_filas", description="Canais de Aposta")
 async def cfg_f(i: discord.Interaction, c1: discord.TextChannel, c2: discord.TextChannel=None, c3: discord.TextChannel=None):
     if i.user.id != DONO_ID: return
-    l = [c1]
-    if c2: l.append(c2)
-    if c3: l.append(c3)
+    l = [c for c in [c1, c2, c3] if c]
     configuracao["canais"]["Filas"] = l
-    await i.response.send_message(f"✅ {len(l)} canais de fila definidos.", ephemeral=True)
+    await i.response.send_message("✅ Configurado.", ephemeral=True)
 
 @bot.event
 async def on_message(message):
@@ -305,4 +302,4 @@ async def on_ready():
     print(f"✅ Bot Online: {bot.user}")
 
 if TOKEN: bot.run(TOKEN)
-                
+        
