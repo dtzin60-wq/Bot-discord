@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import os
 import asyncio
+import re
 
 # ==========================================
 # CONFIGURAÇÃO DO BOT
@@ -13,19 +14,73 @@ intents.members = True
 bot = commands.Bot(command_prefix='.', intents=intents)
 
 # ==========================================
+# BANCOS DE DADOS TEMPORÁRIOS (Em memória)
+# ==========================================
+lista_mediadores = [] 
+pix_db = {}           
+
+# ==========================================
 # BOTÕES DE DENTRO DO TÓPICO (CONFIRMAÇÃO)
 # ==========================================
 class ThreadConfirmacaoView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, jogador1, jogador2, modo, valor_aposta, mediador_id):
         super().__init__(timeout=None)
+        self.jogador1 = jogador1
+        self.jogador2 = jogador2
+        self.modo = modo
+        self.valor_aposta = valor_aposta
+        self.mediador_id = mediador_id
+        
+        self.confirmados = set()
 
     @discord.ui.button(label='Confirmar', style=discord.ButtonStyle.success, custom_id='btn_confirmar_partida')
     async def btn_confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(f"✅ {interaction.user.mention} confirmou a aposta!")
+        if interaction.user.id not in [self.jogador1.id, self.jogador2.id]:
+            return await interaction.response.send_message("❌ Apenas os jogadores da partida podem confirmar!", ephemeral=True)
+
+        self.confirmados.add(interaction.user.id)
+
+        if len(self.confirmados) == 1:
+            await interaction.response.send_message(f"✅ {interaction.user.mention} confirmou a aposta! Aguardando o oponente...")
+        
+        elif len(self.confirmados) == 2:
+            await interaction.response.defer() 
+            
+            try:
+                await interaction.message.delete()
+            except:
+                pass
+
+            valor_sala = self.valor_aposta * 0.10
+
+            pix_info = pix_db.get(self.mediador_id, {"chave": "Não configurada", "tipo": "-", "nome": "Não informado"})
+
+            embed_confirmada = discord.Embed(
+                title="Partida Confirmada",
+                color=discord.Color.from_str('#2ecc71') 
+            )
+            embed_confirmada.add_field(name="👣 Estilo de Jogo", value=f"1v1 {self.modo}", inline=False)
+            
+            mediador_mention = f"<@{self.mediador_id}>" if self.mediador_id else "Nenhum"
+            embed_confirmada.add_field(name="ℹ️ Informações da Aposta", value=f"Valor Da Sala: R$ {valor_sala:.2f}\nMediador: {mediador_mention}", inline=False)
+            
+            embed_confirmada.add_field(name="💎 Valor da Aposta", value=f"R$ {self.valor_aposta:.2f}", inline=False)
+            embed_confirmada.add_field(name="👥 Jogadores", value=f"{self.jogador1.mention}\n{self.jogador2.mention}", inline=False)
+
+            texto_pix = (
+                f"**QR code:** *(Gerador em breve)*\n"
+                f"**Chave Pix:** `{pix_info['chave']}` ({pix_info['tipo']})\n"
+                f"**Nome:** {pix_info['nome']}"
+            )
+
+            await interaction.channel.send(embed=embed_confirmada, content=texto_pix)
+
 
     @discord.ui.button(label='Recusar', style=discord.ButtonStyle.danger, custom_id='btn_recusar_partida')
     async def btn_recusar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(f"❌ {interaction.user.mention} recusou a partida.")
+        if interaction.user.id not in [self.jogador1.id, self.jogador2.id]:
+            return await interaction.response.send_message("❌ Apenas os jogadores podem interagir.", ephemeral=True)
+        await interaction.response.send_message(f"❌ {interaction.user.mention} recusou a partida. A aposta foi cancelada.")
 
     @discord.ui.button(label='Combinar Regras', style=discord.ButtonStyle.secondary, custom_id='btn_combinar_regras', emoji='🏳️')
     async def btn_regras(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -35,17 +90,18 @@ class ThreadConfirmacaoView(discord.ui.View):
 # CLASSE DOS BOTÕES DA FILA (MATCHMAKING)
 # ==========================================
 class FilaView(discord.ui.View):
-    def __init__(self, embed_base, nome_fila, valor_str):
+    def __init__(self, embed_base, nome_fila, valor_float):
         super().__init__(timeout=None)
         self.jogadores = [] 
         self.embed_base = embed_base 
         self.nome_fila = nome_fila
-        self.valor_str = valor_str
+        self.valor_float = valor_float
         self.banner_padrao = 'https://i.imgur.com/SUY8L4o.jpeg' 
         self.banner_match = 'https://i.imgur.com/SUY8L4o.jpeg' 
 
     def atualizar_visual(self):
-        desc = f"👑 **Modo**\n1v1 {self.nome_fila.upper()}\n\n💎 **Valor**\nR$ {self.valor_str}\n\n⚡ **Jogadores**\n"
+        valor_formatado = f"{self.valor_float:.2f}".replace('.', ',')
+        desc = f"👑 **Modo**\n1v1 {self.nome_fila.upper()}\n\n💎 **Valor**\nR$ {valor_formatado}\n\n⚡ **Jogadores**\n"
         
         if len(self.jogadores) == 0:
             desc += "Nenhum jogador na fila"
@@ -57,10 +113,16 @@ class FilaView(discord.ui.View):
         self.embed_base.description = desc
 
     async def processar_clique(self, interaction: discord.Interaction, modo: str):
+        # ========================================================
+        # TRAVA DE SEGURANÇA: Bloqueia se não tiver mediador
+        # ========================================================
+        if len(lista_mediadores) == 0:
+            return await interaction.response.send_message("❌ | NÃO TEM NENHUM MEDIADOR NA FILA!", ephemeral=True)
+
         for j in self.jogadores:
             if j['user'].id == interaction.user.id:
                 if j['modo'] == modo:
-                    return await interaction.response.send_message("⚠️ Já estás na fila a aguardar neste modo!", ephemeral=True)
+                    return await interaction.response.send_message("⚠️ Você já está na fila aguardando neste modo!", ephemeral=True)
                 else:
                     j['modo'] = modo
                     self.atualizar_visual()
@@ -74,6 +136,10 @@ class FilaView(discord.ui.View):
             self.atualizar_visual()
             await interaction.response.edit_message(embed=self.embed_base, view=self)
 
+            # ====== SISTEMA DE PUXAR O MEDIADOR ======
+            mediador_atual = lista_mediadores.pop(0)
+            lista_mediadores.append(mediador_atual)
+
             try:
                 msg_painel = interaction.message
                 topico = await msg_painel.create_thread(
@@ -81,9 +147,10 @@ class FilaView(discord.ui.View):
                     auto_archive_duration=60 
                 )
                 
+                valor_str = f"{self.valor_float:.2f}".replace('.', ',')
                 embed_aguardando = discord.Embed(
                     title="Aguardando Confirmações",
-                    description=f"👑 **Modo:**\n1v1 | {modo}\n\n💎 **Valor da aposta:**\nR$ {self.valor_str}\n\n⚡ **Jogadores:**\n{oponente['user'].mention}\n{interaction.user.mention}",
+                    description=f"👑 **Modo:**\n1v1 | {modo}\n\n💎 **Valor da aposta:**\nR$ {valor_str}\n\n⚡ **Jogadores:**\n{oponente['user'].mention}\n{interaction.user.mention}",
                     color=discord.Color.from_str('#2ecc71')
                 )
                 embed_aguardando.set_thumbnail(url='https://i.imgur.com/SUY8L4o.jpeg') 
@@ -93,10 +160,20 @@ class FilaView(discord.ui.View):
                     color=discord.Color.from_str('#3498db')
                 )
 
+                aviso_mediador = f"Mediador designado: <@{mediador_atual}>"
+
+                view_confirma = ThreadConfirmacaoView(
+                    jogador1=oponente['user'], 
+                    jogador2=interaction.user, 
+                    modo=modo, 
+                    valor_aposta=self.valor_float, 
+                    mediador_id=mediador_atual
+                )
+
                 await topico.send(
-                    content=f"A chamar jogadores: {oponente['user'].mention} {interaction.user.mention}",
+                    content=f"Chamando jogadores: {oponente['user'].mention} {interaction.user.mention}\n{aviso_mediador}",
                     embeds=[embed_aguardando, embed_regras],
-                    view=ThreadConfirmacaoView()
+                    view=view_confirma
                 )
 
             except Exception as e:
@@ -124,43 +201,61 @@ class FilaView(discord.ui.View):
                 self.atualizar_visual()
                 return await interaction.response.edit_message(embed=self.embed_base, view=self)
         
-        await interaction.response.send_message("❌ Não estás em nenhuma fila!", ephemeral=True)
+        await interaction.response.send_message("❌ Você não está em nenhuma fila!", ephemeral=True)
+
 
 # ==========================================
-# CLASSE DO MODAL DE FILA (GERA 15 FILAS)
+# CLASSE DO MODAL DE FILA (ATÉ 15 VALORES)
 # ==========================================
-class FilaModal(discord.ui.Modal, title='Criar Fila de X1'):
+class FilaModal(discord.ui.Modal, title='Criar Filas de X1'):
     nome = discord.ui.TextInput(label='Nome da fila (Ex: Mobile, 4v4, etc)', style=discord.TextStyle.short, required=True)
-    valor = discord.ui.TextInput(label='Valor da aposta (Ex: 0,20 ou 15,00)', style=discord.TextStyle.short, required=True)
+    
+    valores = discord.ui.TextInput(
+        label='Valores (Separe por vírgula, Máx 15)', 
+        style=discord.TextStyle.paragraph, 
+        placeholder='Ex: 0,50, 1,00, 2,00, 5,00', 
+        required=True
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         nome_digitado = self.nome.value.strip()
+        texto_valores = self.valores.value.replace(' ', '') 
+        
+        lista_raw = re.split(r'[;,\n]', texto_valores)
+        
+        valores_validos = []
+        for v in lista_raw:
+            if v:
+                try:
+                    v_num = float(v.replace('R$', '').replace(',', '.'))
+                    valores_validos.append(v_num)
+                except ValueError:
+                    pass
+        
+        if not valores_validos:
+            return await interaction.response.send_message('❌ Nenhum valor válido encontrado! Digite números como 0,50.', ephemeral=True)
 
-        try:
-            valor_num = float(self.valor.value.replace(',', '.'))
-        except ValueError:
-            return await interaction.response.send_message('❌ Valor inválido! Digita um número como 0,20.', ephemeral=True)
+        valores_validos = valores_validos[:15]
 
-        valor_formatado = f"{valor_num:.2f}".replace('.', ',')
-        await interaction.response.send_message(f"✅ A gerar 15 filas de R$ {valor_formatado}...", ephemeral=True)
+        await interaction.response.send_message(f"✅ Gerando {len(valores_validos)} filas...", ephemeral=True)
 
-        for i in range(15):
+        for valor in valores_validos:
+            valor_str = f"{valor:.2f}".replace('.', ',')
+            
             embed = discord.Embed(
-                title=f"1v1 | SPACE APOSTAS {valor_formatado}K",
-                description=f"👑 **Modo**\n1v1 {nome_digitado.upper()}\n\n💎 **Valor**\nR$ {valor_formatado}\n\n⚡ **Jogadores**\nNenhum jogador na fila",
+                title=f"1v1 | SPACE APOSTAS {valor_str}K",
+                description=f"👑 **Modo**\n1v1 {nome_digitado.upper()}\n\n💎 **Valor**\nR$ {valor_str}\n\n⚡ **Jogadores**\nNenhum jogador na fila",
                 color=discord.Color.from_str('#2b2d31')
             )
             embed.set_image(url='https://i.imgur.com/SUY8L4o.jpeg')
 
-            view = FilaView(embed_base=embed, nome_fila=nome_digitado, valor_str=valor_formatado)
+            view = FilaView(embed_base=embed, nome_fila=nome_digitado, valor_float=valor)
             await interaction.channel.send(embed=embed, view=view)
             await asyncio.sleep(0.5)
 
 # ==========================================
 # SISTEMA DO MEDIADOR (PAINEL DA FILA CONTROLADORA)
 # ==========================================
-lista_mediadores = [] 
-
 class MediadorView(discord.ui.View):
     def __init__(self, embed_base):
         super().__init__(timeout=None)
@@ -182,7 +277,7 @@ class MediadorView(discord.ui.View):
             self.atualizar_embed()
             await interaction.response.edit_message(embed=self.embed_base, view=self)
         else:
-            await interaction.response.send_message("⚠️ Já estás na fila de mediadores!", ephemeral=True)
+            await interaction.response.send_message("⚠️ Você já está na fila de mediadores!", ephemeral=True)
 
     @discord.ui.button(label='Sair da fila', style=discord.ButtonStyle.danger, emoji='🔴', custom_id='btn_med_sair')
     async def btn_sair(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -191,7 +286,7 @@ class MediadorView(discord.ui.View):
             self.atualizar_embed()
             await interaction.response.edit_message(embed=self.embed_base, view=self)
         else:
-            await interaction.response.send_message("❌ Não estás na fila!", ephemeral=True)
+            await interaction.response.send_message("❌ Você não está na fila!", ephemeral=True)
 
     @discord.ui.button(label='Remover Mediador', style=discord.ButtonStyle.secondary, emoji='⚙️', custom_id='btn_med_remover')
     async def btn_remover(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -205,11 +300,17 @@ class MediadorView(discord.ui.View):
 # SISTEMA DE PIX
 # ==========================================
 class CadastrarPixModal(discord.ui.Modal, title='Configurar Chave PIX'):
+    nome = discord.ui.TextInput(label='Seu Nome Completo', style=discord.TextStyle.short, placeholder='Ex: João da Silva', required=True)
     chave = discord.ui.TextInput(label='Sua Chave PIX', style=discord.TextStyle.short, placeholder='Ex: 123.456.789-00', required=True)
     tipo = discord.ui.TextInput(label='Tipo (CPF, Email, Telefone, Aleatória)', style=discord.TextStyle.short, placeholder='Ex: CPF', required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message(f"✅ **Sucesso!**\nA tua Chave PIX ({self.tipo.value}) foi salva: `{self.chave.value}`", ephemeral=True)
+        pix_db[interaction.user.id] = {
+            'chave': self.chave.value,
+            'tipo': self.tipo.value,
+            'nome': self.nome.value
+        }
+        await interaction.response.send_message(f"✅ **Sucesso!**\nSua Chave PIX foi salva e aparecerá automaticamente nas partidas que você mediar.", ephemeral=True)
 
 class PixView(discord.ui.View):
     def __init__(self):
@@ -221,11 +322,15 @@ class PixView(discord.ui.View):
 
     @discord.ui.button(label='Sua Chave', style=discord.ButtonStyle.success, emoji='🔍', custom_id='btn_pix_ver')
     async def btn_ver(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("🔐 **Sua Chave:** *(Ainda não tens chave registada no banco de dados)*", ephemeral=True)
+        pix = pix_db.get(interaction.user.id)
+        if pix:
+            await interaction.response.send_message(f"🔐 **Sua Chave Atual:**\n**Nome:** {pix['nome']}\n**Chave:** `{pix['chave']}` ({pix['tipo']})", ephemeral=True)
+        else:
+            await interaction.response.send_message("🔐 **Sua Chave:** *(Você ainda não tem chave cadastrada)*", ephemeral=True)
 
     @discord.ui.button(label='Ver Chave de Mediador', style=discord.ButtonStyle.secondary, emoji='🔍', custom_id='btn_pix_mediador')
     async def btn_mediador(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("🛠️ Em breve: Escolhe um mediador para veres a chave dele.", ephemeral=True)
+        await interaction.response.send_message("🛠️ Em breve: Escolha um mediador para ver a chave dele.", ephemeral=True)
 
 # ==========================================
 # EVENTOS E COMANDOS PRINCIPAIS
@@ -235,12 +340,10 @@ async def on_ready():
     print(f'✅ Bot online como {bot.user}')
     await bot.tree.sync()
 
-# Comando /criar_filas
-@bot.tree.command(name="criar_filas", description="Gera 15 painéis de aposta")
+@bot.tree.command(name="criar_filas", description="Gera painéis de aposta com vários valores")
 async def criar_filas(interaction: discord.Interaction):
     await interaction.response.send_modal(FilaModal())
 
-# Comando /mediador
 @bot.tree.command(name="mediador", description="Abre o painel da fila controladora")
 async def mediador(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -253,7 +356,6 @@ async def mediador(interaction: discord.Interaction):
     view = MediadorView(embed_base=embed)
     await interaction.response.send_message(embed=embed, view=view)
 
-# Comando /pix
 @bot.tree.command(name="pix", description="Abre o painel para configurar a chave PIX")
 async def pix_comando(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -266,7 +368,6 @@ async def pix_comando(interaction: discord.Interaction):
     view = PixView()
     await interaction.response.send_message(embed=embed, view=view)
 
-# Comando de Perfil (.p)
 @bot.command(name="p")
 async def perfil(ctx, membro: discord.Member = None):
     target_user = membro or ctx.author
@@ -294,7 +395,6 @@ meu_token = os.environ.get('TOKEN')
 
 if not meu_token:
     print("❌ ERRO: Token não encontrado na Railway!")
-    print("Verifique se a variável TOKEN foi criada no separador 'Variables'.")
 else:
     bot.run(meu_token)
-        
+    
