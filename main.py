@@ -11,25 +11,44 @@ bot = commands.Bot(command_prefix='.', intents=intents)
 quantidade_de_filas_ativas = 0
 
 # ==========================================
-# CLASSE DOS BOTÕES (COM LÓGICA DE MATCHMAKING)
+# BOTÕES DE DENTRO DO TÓPICO (CONFIRMAÇÃO)
+# ==========================================
+class ThreadConfirmacaoView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label='Confirmar', style=discord.ButtonStyle.success, custom_id='btn_confirmar_partida')
+    async def btn_confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Apenas manda uma mensagem avisando que o cara confirmou
+        await interaction.response.send_message(f"✅ {interaction.user.mention} confirmou a aposta!")
+
+    @discord.ui.button(label='Recusar', style=discord.ButtonStyle.danger, custom_id='btn_recusar_partida')
+    async def btn_recusar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(f"❌ {interaction.user.mention} recusou a partida.")
+
+    @discord.ui.button(label='Combinar Regras', style=discord.ButtonStyle.secondary, custom_id='btn_combinar_regras', emoji='🏳️')
+    async def btn_regras(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(f"📝 {interaction.user.mention} quer combinar regras. Usem este chat para conversar!")
+
+# ==========================================
+# CLASSE DOS BOTÕES DA FILA (MATCHMAKING)
 # ==========================================
 class FilaView(discord.ui.View):
     def __init__(self, embed_base, nome_fila, valor_fila):
         super().__init__(timeout=None)
-        self.jogadores = [] # Lista para guardar quem está na fila
-        self.embed_base = embed_base # Guarda o visual base do painel
+        self.jogadores = [] 
+        self.embed_base = embed_base 
         self.nome_fila = nome_fila
         self.valor_fila = valor_fila
-        self.banner_padrao = 'https://i.imgur.com/SUY8L4o.jpeg' # Imagem normal da fila
-        self.banner_match = 'https://i.imgur.com/SUY8L4o.jpeg' # AQUI VOCÊ PODE COLOCAR OUTRA IMAGEM PRA QUANDO FECHAR PARTIDA
+        self.banner_padrao = 'https://i.imgur.com/SUY8L4o.jpeg' 
+        self.banner_match = 'https://i.imgur.com/SUY8L4o.jpeg' 
 
     def atualizar_visual(self):
-        # Refaz a descrição do painel com os jogadores atuais
         desc = f"👑 **Modo**\n1v1 {self.nome_fila.upper()}\n\n💎 **Valor**\nR$ {self.valor_fila:.2f}\n\n⚡ **Jogadores**\n"
         
         if len(self.jogadores) == 0:
             desc += "Nenhum jogador na fila"
-            self.embed_base.set_image(url=self.banner_padrao) # Volta pro banner padrão
+            self.embed_base.set_image(url=self.banner_padrao) 
         else:
             for j in self.jogadores:
                 desc += f"{j['user'].mention} - {j['modo']}\n"
@@ -43,34 +62,49 @@ class FilaView(discord.ui.View):
                 if j['modo'] == modo:
                     return await interaction.response.send_message("⚠️ Você já está na fila aguardando neste modo!", ephemeral=True)
                 else:
-                    # Se ele clicou no outro modo, a gente atualiza a escolha dele
                     j['modo'] = modo
                     self.atualizar_visual()
                     return await interaction.response.edit_message(embed=self.embed_base, view=self)
 
-        # 2. Verifica se já existe um oponente aguardando NO MESMO MODO
+        # 2. Verifica se já existe um oponente NO MESMO MODO
         oponente = next((j for j in self.jogadores if j['modo'] == modo), None)
 
         if oponente:
             # ======= MATCH ENCONTRADO! =======
-            # Remove o oponente da fila (já que achou partida)
             self.jogadores.remove(oponente) 
-            
-            # Atualiza a imagem do banner temporariamente (opcional)
             self.embed_base.set_image(url=self.banner_match)
             self.atualizar_visual()
             await interaction.response.edit_message(embed=self.embed_base, view=self)
 
-            # Cria o tópico (Thread) na própria mensagem do painel
+            # Cria o tópico
             try:
                 msg_painel = interaction.message
                 topico = await msg_painel.create_thread(
                     name=f"🎮 {oponente['user'].name} vs {interaction.user.name}",
-                    auto_archive_duration=60 # Tópico fecha sozinho após 1 hora de inatividade
+                    auto_archive_duration=60 
                 )
                 
-                # Manda mensagem marcando os dois no tópico
-                await topico.send(f"✅ **PARTIDA CONFIRMADA!**\n{oponente['user'].mention} 🆚 {interaction.user.mention}\n\n**Modo:** {modo}\n**Valor:** R$ {self.valor_fila:.2f}\n\nMandem print do PIX e boa sorte!")
+                # ==== MENSAGENS DENTRO DO TÓPICO IGUAL A SUA IMAGEM ====
+                embed_aguardando = discord.Embed(
+                    title="Aguardando Confirmações",
+                    description=f"👑 **Modo:**\n1v1 | {modo}\n\n💎 **Valor da aposta:**\nR$ {self.valor_fila:.2f}\n\n⚡ **Jogadores:**\n{oponente['user'].mention}\n{interaction.user.mention}",
+                    color=discord.Color.from_str('#2ecc71') # Verde da borda
+                )
+                # Coloquei a URL da boneca do round 6 aqui como exemplo
+                embed_aguardando.set_thumbnail(url='https://i.imgur.com/SUY8L4o.jpeg') 
+
+                embed_regras = discord.Embed(
+                    description="✨ **SEJAM MUITO BEM-VINDOS** ✨\n\n• Regras adicionais podem ser combinadas entre os participantes.\n• Se a regra combinada não existir no regulamento oficial da organização, é obrigatório tirar print do acordo antes do início da partida.",
+                    color=discord.Color.from_str('#3498db') # Azulzinho da borda
+                )
+
+                # Manda as duas embeds e os botões de confirmar no tópico
+                await topico.send(
+                    content=f"Chamando jogadores: {oponente['user'].mention} {interaction.user.mention}",
+                    embeds=[embed_aguardando, embed_regras],
+                    view=ThreadConfirmacaoView()
+                )
+
             except Exception as e:
                 print(f"Erro ao criar tópico: {e}")
                 await interaction.followup.send("⚠️ Partida confirmada, mas o bot não tem permissão de 'Criar Tópicos' neste canal!", ephemeral=True)
@@ -81,17 +115,14 @@ class FilaView(discord.ui.View):
             self.atualizar_visual()
             await interaction.response.edit_message(embed=self.embed_base, view=self)
 
-    # BOTÃO GELO NORMAL
-    @discord.ui.button(label='Gelo Normal', style=discord.ButtonStyle.secondary, custom_id='btn_gel_normal')
+    @discord.ui.button(label='Gel Normal', style=discord.ButtonStyle.secondary, custom_id='btn_gel_normal')
     async def btn_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.processar_clique(interaction, "Gelo Normal")
+        await self.processar_clique(interaction, "Gel Normal")
 
-    # BOTÃO GELO INFINITO
-    @discord.ui.button(label='Gelo Infinito', style=discord.ButtonStyle.secondary, custom_id='btn_gel_infinito')
+    @discord.ui.button(label='Gel Infinito', style=discord.ButtonStyle.secondary, custom_id='btn_gel_infinito')
     async def btn_infinito(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.processar_clique(interaction, "Gelo Infinito")
+        await self.processar_clique(interaction, "Gel Infinito")
 
-    # BOTÃO SAIR DA FILA
     @discord.ui.button(label='Sair da fila', style=discord.ButtonStyle.danger, custom_id='btn_sair_fila')
     async def btn_sair(self, interaction: discord.Interaction, button: discord.ui.Button):
         for j in self.jogadores:
@@ -104,10 +135,11 @@ class FilaView(discord.ui.View):
 
 
 # ==========================================
-# CLASSE DO MODAL
+# CLASSE DO MODAL (AGORA ACEITA QUALQUER NOME)
 # ==========================================
 class FilaModal(discord.ui.Modal, title='Criar Fila de X1'):
-    nome = discord.ui.TextInput(label='Tipo (mobile, misto, emulador, Full soco)', style=discord.TextStyle.short, required=True)
+    # Alterei o label para indicar que pode qualquer nome
+    nome = discord.ui.TextInput(label='Nome da fila (Ex: Mobile, 4v4, etc)', style=discord.TextStyle.short, required=True)
     valor = discord.ui.TextInput(label='Valor da aposta (Máximo R$ 100)', style=discord.TextStyle.short, required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -116,9 +148,8 @@ class FilaModal(discord.ui.Modal, title='Criar Fila de X1'):
         if quantidade_de_filas_ativas >= 15:
             return await interaction.response.send_message('⚠️ Limite de 15 filas ativas atingido!', ephemeral=True)
 
-        nome_digitado = self.nome.value.strip().lower()
-        if nome_digitado not in ['mobile', 'misto', 'emulador', 'full soco']:
-            return await interaction.response.send_message('❌ Nome inválido!', ephemeral=True)
+        # Pegamos o nome digitado como a pessoa escreveu (sem a trava de segurança)
+        nome_digitado = self.nome.value.strip()
 
         try:
             valor_num = float(self.valor.value.replace(',', '.'))
@@ -134,9 +165,7 @@ class FilaModal(discord.ui.Modal, title='Criar Fila de X1'):
         )
         embed.set_image(url='https://i.imgur.com/SUY8L4o.jpeg')
 
-        # Passamos o embed e as infos da fila para a View agora
         view = FilaView(embed_base=embed, nome_fila=nome_digitado, valor_fila=valor_num)
-        
         await interaction.response.send_message(embed=embed, view=view)
 
 
