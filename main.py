@@ -1,4 +1,4 @@
-Import discord
+import discord
 from discord.ext import commands
 import os
 import asyncio
@@ -278,7 +278,7 @@ class FilaView(discord.ui.View):
         
         await interaction.response.send_message("❌ Você não está em nenhuma fila!", ephemeral=True)
 
-# ==========================================
+        # ==========================================
 # MODAIS DE CONFIGURAÇÃO E NOVAS FUNÇÕES
 # ==========================================
 class MudarTaxaModal(discord.ui.Modal, title='Mudar Taxa da Sala'):
@@ -512,3 +512,4 @@ if not meu_token:
     print("❌ ERRO: Token não encontrado na Railway!")
 else:
     bot.run(meu_token)
+            
