@@ -15,7 +15,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix='.', intents=intents)
 
-# Bancos de Dados em Memória
+# Bancos de Dados
 lista_mediadores = [] 
 pix_db = {}           
 canais_topico_db = [] 
@@ -23,14 +23,9 @@ taxa_fixa_db = 0.0
 banner_db = 'https://i.imgur.com/SUY8L4o.jpeg' 
 stats_db = {} 
 contador_partidas = 0 
-
-# NOVOS: Cargos e Histórico (Logs)
 cargos_db = {'perfil': None, 'mediador': None, 'admin': None, 'pix': None, 'logs': None}
-historico_db = {} # Formato: {user_id: [{'modo': '1v1', 'partida': 'Mobile-1', 'valor': 5, 'topico_id': 123}]}
+historico_db = {} 
 
-# ==========================================
-# FUNÇÕES DE APOIO
-# ==========================================
 def gerar_embed_sucesso(usuario):
     embed = discord.Embed(
         description=f"{usuario.mention}, a sua operação foi concluída com êxito.\n↪ Você entrou ou saiu da fila com sucesso.",
@@ -42,11 +37,11 @@ def gerar_embed_sucesso(usuario):
 def tem_permissao(membro, chave):
     if membro.guild_permissions.administrator: return True
     cargo_id = cargos_db.get(chave)
-    if not cargo_id: return True # Se não configurou, todos podem usar
+    if not cargo_id: return True 
     return any(r.id == cargo_id for r in membro.roles)
 
-    # ==========================================
-# MENSAGEM AUTOMÁTICA
+# ==========================================
+# MENSAGEM AUTOMÁTICA E CARGOS
 # ==========================================
 class EnviarMensagemView(discord.ui.View):
     def __init__(self, mensagem_texto):
@@ -61,10 +56,8 @@ class EnviarMensagemView(discord.ui.View):
 
     @discord.ui.button(label='Enviar Mensagens', style=discord.ButtonStyle.success, row=1)
     async def btn_enviar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.canais_selecionados:
-            return await interaction.response.send_message("❌ Selecione ao menos um canal!", ephemeral=True)
-        
-        await interaction.response.send_message("✅ Enviando mensagens...", ephemeral=True)
+        if not self.canais_selecionados: return await interaction.response.send_message("❌ Selecione um canal!", ephemeral=True)
+        await interaction.response.send_message("✅ Enviando...", ephemeral=True)
         for canal in self.canais_selecionados:
             try: await canal.send(self.mensagem_texto)
             except: pass
@@ -72,39 +65,20 @@ class EnviarMensagemView(discord.ui.View):
 class MensagemAutoModal(discord.ui.Modal, title='Mensagem Automática'):
     msg = discord.ui.TextInput(label='Hi, qual vai ser a mensagem de hoje?', style=discord.TextStyle.paragraph, required=True)
     async def on_submit(self, interaction: discord.Interaction):
-        view = EnviarMensagemView(self.msg.value)
-        await interaction.response.send_message("📢 **Mensagem salva!** Agora selecione abaixo em quais canais deseja enviá-la:", view=view, ephemeral=True)
+        await interaction.response.send_message("📢 **Mensagem salva!** Selecione os canais abaixo:", view=EnviarMensagemView(self.msg.value), ephemeral=True)
 
-# ==========================================
-# CONFIGURAÇÃO DE CARGOS
-# ==========================================
 class ConfigCargosView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
-
     @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Qual cargo pode usar .p?", row=0)
-    async def s_perfil(self, interaction, select):
-        cargos_db['perfil'] = select.values[0].id
-        await interaction.response.send_message(f"✅ Cargo para `.p` definido para {select.values[0].mention}", ephemeral=True)
-
+    async def s_perfil(self, i, s): cargos_db['perfil'] = s.values[0].id; await i.response.send_message("✅ Cargo atualizado!", ephemeral=True)
     @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Qual cargo pode entrar na fila mediador?", row=1)
-    async def s_med(self, interaction, select):
-        cargos_db['mediador'] = select.values[0].id
-        await interaction.response.send_message(f"✅ Cargo para Mediador definido!", ephemeral=True)
-
+    async def s_med(self, i, s): cargos_db['mediador'] = s.values[0].id; await i.response.send_message("✅ Cargo atualizado!", ephemeral=True)
     @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Qual cargo pode mexer no Bot?", row=2)
-    async def s_admin(self, interaction, select):
-        cargos_db['admin'] = select.values[0].id
-        await interaction.response.send_message(f"✅ Cargo Admin definido!", ephemeral=True)
-
+    async def s_admin(self, i, s): cargos_db['admin'] = s.values[0].id; await i.response.send_message("✅ Cargo atualizado!", ephemeral=True)
     @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Qual cargo pode configurar o Pix?", row=3)
-    async def s_pix(self, interaction, select):
-        cargos_db['pix'] = select.values[0].id
-        await interaction.response.send_message(f"✅ Cargo de PIX definido!", ephemeral=True)
-
+    async def s_pix(self, i, s): cargos_db['pix'] = s.values[0].id; await i.response.send_message("✅ Cargo atualizado!", ephemeral=True)
     @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Qual cargo pode puxar as logs?", row=4)
-    async def s_logs(self, interaction, select):
-        cargos_db['logs'] = select.values[0].id
-        await interaction.response.send_message(f"✅ Cargo de Logs definido!", ephemeral=True)
+    async def s_logs(self, i, s): cargos_db['logs'] = s.values[0].id; await i.response.send_message("✅ Cargo atualizado!", ephemeral=True)
 
 # ==========================================
 # MENUS DE VITÓRIA E MEDIAÇÃO
@@ -112,16 +86,13 @@ class ConfigCargosView(discord.ui.View):
 class EscolherVencedorSelect(discord.ui.Select):
     def __init__(self, j1, j2, tipo_vitoria):
         self.j1, self.j2, self.tipo_vitoria = j1, j2, tipo_vitoria
-        options = [
-            discord.SelectOption(label=j1.name, value=str(j1.id), emoji="🎮"),
-            discord.SelectOption(label=j2.name, value=str(j2.id), emoji="🎮")
-        ]
-        super().__init__(placeholder="Selecione o vencedor...", options=options)
+        ops = [discord.SelectOption(label=j1.name, value=str(j1.id), emoji="🎮"), discord.SelectOption(label=j2.name, value=str(j2.id), emoji="🎮")]
+        super().__init__(placeholder="Selecione o vencedor...", options=ops)
 
     async def callback(self, interaction: discord.Interaction):
-        vencedor_id = int(self.values[0])
-        vencedor = self.j1 if vencedor_id == self.j1.id else self.j2
-        perdedor = self.j2 if vencedor_id == self.j1.id else self.j1
+        v_id = int(self.values[0])
+        vencedor = self.j1 if v_id == self.j1.id else self.j2
+        perdedor = self.j2 if v_id == self.j1.id else self.j1
 
         for u in [vencedor, perdedor]:
             if u.id not in stats_db: stats_db[u.id] = {'vitorias': 0, 'derrotas': 0, 'consecutivas': 0, 'total': 0, 'coins': 0}
@@ -142,12 +113,12 @@ class EscolherVencedorSelect(discord.ui.Select):
 class MenuMediadorSelect(discord.ui.Select):
     def __init__(self, j1, j2):
         self.j1, self.j2 = j1, j2
-        options = [
+        ops = [
             discord.SelectOption(label="Dar vitória a um jogador", emoji="🏆", value="normal"),
             discord.SelectOption(label="Vitória por W.O", emoji="❗", value="wo"),
             discord.SelectOption(label="Finalizar partida", emoji="❌", description="Fecha o tópico", value="finalizar")
         ]
-        super().__init__(placeholder="Menu Mediador", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="Menu Mediador", options=ops)
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "finalizar":
@@ -158,7 +129,7 @@ class MenuMediadorSelect(discord.ui.Select):
         elif self.values[0] == "normal":
             await interaction.response.send_message("🏆 **Quem ganhou?**", view=discord.ui.View().add_item(EscolherVencedorSelect(self.j1, self.j2, "normal")), ephemeral=True)
         elif self.values[0] == "wo":
-            await interaction.response.send_message("❗ **Ganhou por W.O?**", view=discord.ui.View().add_item(EscolherVencedorSelect(self.j1, self.j2, "wo")), ephemeral=True)
+            await interaction.response.send_message("❗ **Quem ganhou por W.O?**", view=discord.ui.View().add_item(EscolherVencedorSelect(self.j1, self.j2, "wo")), ephemeral=True)
 
 class MenuMediadorView(discord.ui.View):
     def __init__(self, j1, j2):
@@ -171,7 +142,7 @@ class RegrasView(discord.ui.View):
         self.add_item(discord.ui.Button(label='Regras', style=discord.ButtonStyle.link, url='https://discord.gg/seulink'))
 
 # ==========================================
-# CONFIRMAÇÃO E REGISTRO DE HISTÓRICO
+# CONFIRMAÇÃO E REGISTRO
 # ==========================================
 class ThreadConfirmacaoView(discord.ui.View):
     def __init__(self, j1, j2, modo, valor, med_id, nome_f):
@@ -201,7 +172,6 @@ class ThreadConfirmacaoView(discord.ui.View):
             try: await interaction.channel.edit(name=novo_nome)
             except: pass
 
-            # SALVA NO HISTÓRICO DE LOGS DOS DOIS JOGADORES
             registro = {'modo': self.modo, 'partida': novo_nome, 'valor': self.valor, 'topico_id': interaction.channel.id}
             historico_db.setdefault(self.j1.id, []).append(registro)
             historico_db.setdefault(self.j2.id, []).append(registro)
@@ -211,8 +181,9 @@ class ThreadConfirmacaoView(discord.ui.View):
 
             emb = discord.Embed(title="Partida Confirmada", color=discord.Color.from_str('#3b2c28'))
             emb.add_field(name="🎮 Estilo de Jogo", value=f"1v1 {self.modo}", inline=False)
-            emb.add_field(name="ℹ️ Info", value=f"Taxa: R$ {taxa_fixa_db:.2f}\nMediador: <@{self.med_id}>", inline=False)
-            emb.add_field(name="💠 Aposta", value=f"R$ {self.valor:.2f}", inline=False)
+            emb.add_field(name="ℹ️ Informações", value=f"Taxa da Sala: R$ {taxa_fixa_db:.2f}\nMediador: <@{self.med_id}>", inline=False)
+            emb.add_field(name="💠 Valor da Aposta", value=f"R$ {self.valor:.2f}", inline=False)
+            emb.add_field(name="👥 Jogadores", value=f"{self.j1.mention}\n{self.j2.mention}", inline=False)
             emb.set_thumbnail(url=banner_db)
 
             qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={pix['chave']}"
@@ -236,7 +207,9 @@ class FilaView(discord.ui.View):
     def atualizar_visual(self):
         v_str = f"{self.val:.2f}".replace('.', ',')
         desc = f"👑 **Modo**\n1v1 {self.nome.upper()}\n\n💎 **Valor**\nR$ {v_str}\n\n⚡ **Jogadores**\n"
-        desc += "Nenhum jogador na fila" if not self.jogs else "\n".join([f"{j['user'].mention} - {j['modo']}" for j in self.jogs])
+        if not self.jogs: desc += "Nenhum jogador na fila"
+        else:
+            for j in self.jogs: desc += f"{j['user'].mention} - {j['modo']}\n"
         self.emb.description = desc
         self.emb.set_image(url=banner_db)
 
@@ -282,8 +255,8 @@ class FilaView(discord.ui.View):
         await i.response.send_message(embed=gerar_embed_sucesso(i.user), ephemeral=True)
         await i.message.edit(embed=self.emb, view=self)
 
-# ==========================================
-# PUXAR LOGS E MODAIS SECUNDÁRIOS
+        # ==========================================
+# LOGS E MODAIS DE CONFIGURAÇÃO
 # ==========================================
 class BotaoPuxarLogView(discord.ui.View):
     def __init__(self, topico_id):
@@ -295,12 +268,12 @@ class BotaoPuxarLogView(discord.ui.View):
         if not tem_permissao(interaction.user, 'logs'): return await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         canal = interaction.guild.get_thread(self.topico_id)
-        if not canal: return await interaction.followup.send("⚠️ Tópico excluído ou não encontrado.", ephemeral=True)
+        if not canal: return await interaction.followup.send("⚠️ Tópico excluído ou inacessível.", ephemeral=True)
         
         msgs = [m async for m in canal.history(limit=200, oldest_first=True)]
         txt = "\n".join([f"[{m.created_at.strftime('%d/%m %H:%M')}] {m.author.name}: {m.content}" for m in msgs])
         arquivo = discord.File(io.BytesIO(txt.encode('utf-8')), filename=f"log_{self.topico_id}.txt")
-        await interaction.followup.send("📄 Aqui está o histórico da conversa:", file=arquivo, ephemeral=True)
+        await interaction.followup.send("📄 Histórico da conversa:", file=arquivo, ephemeral=True)
 
 class SelectMatchLog(discord.ui.Select):
     def __init__(self, historico):
@@ -315,7 +288,7 @@ class SelectMatchLog(discord.ui.Select):
         await interaction.response.send_message(embed=emb, view=BotaoPuxarLogView(h['topico_id']), ephemeral=True)
 
 class FilaModal(discord.ui.Modal, title='Criar Filas'):
-    n = discord.ui.TextInput(label='Nome da fila', required=True)
+    n = discord.ui.TextInput(label='Nome da fila (Ex: Mobile)', required=True)
     v = discord.ui.TextInput(label='Valores (Separe por vírgula)', style=discord.TextStyle.paragraph)
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.send_message("✅ Gerando filas...", ephemeral=True)
@@ -331,8 +304,10 @@ class MudarTaxaModal(discord.ui.Modal, title='Mudar Taxa'):
     t = discord.ui.TextInput(label='Valor da taxa? (Ex: 0,20)')
     async def on_submit(self, i):
         global taxa_fixa_db
-        taxa_fixa_db = float(self.t.value.replace(',', '.'))
-        await i.response.send_message(f"✅ Taxa: R$ {taxa_fixa_db:.2f}", ephemeral=True)
+        try:
+            taxa_fixa_db = float(self.t.value.replace(',', '.'))
+            await i.response.send_message(f"✅ Taxa: R$ {taxa_fixa_db:.2f}", ephemeral=True)
+        except: await i.response.send_message("❌ Erro.", ephemeral=True)
 
 class MudarBannerModal(discord.ui.Modal, title='Mudar Banner'):
     b = discord.ui.TextInput(label='Link da Imagem')
@@ -341,9 +316,52 @@ class MudarBannerModal(discord.ui.Modal, title='Mudar Banner'):
         banner_db = self.b.value.strip()
         await i.response.send_message("✅ Banner atualizado!", ephemeral=True)
 
+class ConfigurarCanaisModal(discord.ui.Modal, title='Canais para Tópicos'):
+    canal1 = discord.ui.TextInput(label='ID do Canal 1', required=True)
+    async def on_submit(self, interaction: discord.Interaction):
+        global canais_topico_db
+        canais_topico_db.clear()
+        if self.canal1.value.strip().isdigit(): canais_topico_db.append(int(self.canal1.value.strip()))
+        await interaction.response.send_message("✅ Canal configurado!", ephemeral=True)
+
 # ==========================================
-# PAINEL PIX, MEDIADOR E COMANDOS
+# VIEWS DO MEDIADOR E PIX (ORIGINAIS)
 # ==========================================
+class MediadorView(discord.ui.View):
+    def __init__(self, embed_base):
+        super().__init__(timeout=None)
+        self.embed_base = embed_base
+
+    def atualizar_embed(self):
+        desc = "Entre na fila para começar a mediar suas filas\n\n"
+        if not lista_mediadores: desc += "*Nenhum mediador na fila.*"
+        else:
+            for idx, user_id in enumerate(lista_mediadores, 1): desc += f"{idx} • <@{user_id}> {user_id}\n"
+        self.embed_base.description = desc
+
+    @discord.ui.button(label='Entrar na fila', style=discord.ButtonStyle.success, emoji='🟢')
+    async def btn_entrar(self, i: discord.Interaction, b):
+        if not tem_permissao(i.user, 'mediador'): return await i.response.send_message("❌ Sem permissão.", ephemeral=True)
+        if i.user.id not in lista_mediadores:
+            lista_mediadores.append(i.user.id)
+            self.atualizar_embed()
+            await i.response.send_message(embed=gerar_embed_sucesso(i.user), ephemeral=True)
+            await i.message.edit(embed=self.embed_base)
+
+    @discord.ui.button(label='Sair da fila', style=discord.ButtonStyle.danger, emoji='🔴')
+    async def btn_sair(self, i: discord.Interaction, b):
+        if i.user.id in lista_mediadores:
+            lista_mediadores.remove(i.user.id)
+            self.atualizar_embed()
+            await i.response.send_message(embed=gerar_embed_sucesso(i.user), ephemeral=True)
+            await i.message.edit(embed=self.embed_base)
+
+    @discord.ui.button(label='Remover Mediador', style=discord.ButtonStyle.secondary, emoji='⚙️')
+    async def btn_remover(self, i: discord.Interaction, b): await i.response.send_message("🔧 Função em desenvolvimento.", ephemeral=True)
+
+    @discord.ui.button(label='Painel Staff', style=discord.ButtonStyle.secondary, emoji='⚙️')
+    async def btn_staff(self, i: discord.Interaction, b): await i.response.send_message("🛠️ Painel Staff em desenvolvimento.", ephemeral=True)
+
 class CadastrarPixModal(discord.ui.Modal, title='Configurar PIX'):
     nome = discord.ui.TextInput(label='Nome Completo')
     chave = discord.ui.TextInput(label='Chave PIX')
@@ -352,52 +370,68 @@ class CadastrarPixModal(discord.ui.Modal, title='Configurar PIX'):
         pix_db[i.user.id] = {'chave': self.chave.value, 'tipo': self.tipo.value, 'nome': self.nome.value}
         await i.response.send_message("✅ Chave PIX salva!", ephemeral=True)
 
+class PixView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    
+    @discord.ui.button(label='Chave pix', style=discord.ButtonStyle.success, emoji='💠')
+    async def btn_cadastrar(self, i, b): await i.response.send_modal(CadastrarPixModal())
+    
+    @discord.ui.button(label='Sua Chave', style=discord.ButtonStyle.success, emoji='🔍')
+    async def btn_ver(self, i, b):
+        p = pix_db.get(i.user.id)
+        if p: await i.response.send_message(f"🔐 **Chave:** `{p['chave']}`\n**Nome:** {p['nome']}", ephemeral=True)
+        else: await i.response.send_message("🔐 Você não tem chave cadastrada.", ephemeral=True)
+        
+    @discord.ui.button(label='Ver Chave de Mediador', style=discord.ButtonStyle.secondary, emoji='🔍')
+    async def btn_mediador(self, i, b): await i.response.send_message("🛠️ Em breve: ver a chave de outro.", ephemeral=True)
+
+    # ==========================================
+# TODOS OS COMANDOS (SLASH E PREFIXO)
+# ==========================================
+
 @bot.tree.command(name="configurar_cargos", description="Abre o painel de configuração de permissões")
-async def config_cargos(i):
-    if not i.user.guild_permissions.administrator: return await i.response.send_message("❌ Apenas Administradores.", ephemeral=True)
-    await i.response.send_message("⚙️ **Configuração de Cargos**", view=ConfigCargosView(), ephemeral=True)
+async def configurar_cargos(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("❌ Apenas Administradores.", ephemeral=True)
+    await interaction.response.send_message("⚙️ **Configuração de Cargos**", view=ConfigCargosView(), ephemeral=True)
 
 @bot.tree.command(name="enviar_mensangem_automatica", description="Envia avisos automáticos para múltiplos canais")
-async def msg_auto(i):
-    if not tem_permissao(i.user, 'admin'): return await i.response.send_message("❌ Sem permissão.", ephemeral=True)
-    await i.response.send_modal(MensagemAutoModal())
+async def enviar_mensangem_automatica(interaction: discord.Interaction):
+    if not tem_permissao(interaction.user, 'admin'): return await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+    await interaction.response.send_modal(MensagemAutoModal())
 
-@bot.tree.command(name="mudar_taxa")
-async def mudar_taxa(i): await i.response.send_modal(MudarTaxaModal())
+@bot.tree.command(name="mudar_taxa", description="Define o valor fixo da taxa da sala")
+async def mudar_taxa(interaction: discord.Interaction):
+    if not tem_permissao(interaction.user, 'admin'): return await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+    await interaction.response.send_modal(MudarTaxaModal())
 
-@bot.tree.command(name="banner_da_fila")
-async def banner_da_fila(i): await i.response.send_modal(MudarBannerModal())
+@bot.tree.command(name="banner_da_fila", description="Altera a imagem principal dos cards de aposta")
+async def banner_da_fila(interaction: discord.Interaction):
+    if not tem_permissao(interaction.user, 'admin'): return await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+    await interaction.response.send_modal(MudarBannerModal())
 
-@bot.tree.command(name="criar_filas")
-async def criar_filas(i):
-    if not tem_permissao(i.user, 'admin'): return await i.response.send_message("❌ Sem permissão.", ephemeral=True)
-    await i.response.send_modal(FilaModal())
+@bot.tree.command(name="escolher_canais_pra_criar_topico", description="Escolha até 3 canais para o bot criar os tópicos")
+async def escolher_canais_pra_criar_topico(interaction: discord.Interaction):
+    if not tem_permissao(interaction.user, 'admin'): return await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+    await interaction.response.send_modal(ConfigurarCanaisModal())
 
-@bot.tree.command(name="mediador")
-async def cmd_med(i):
-    emb = discord.Embed(title="Painel Controladora", description="*Vazio*", color=0x2b2d31).set_thumbnail(url=banner_db)
-    v = discord.ui.View()
-    @discord.ui.button(label='Entrar', style=discord.ButtonStyle.success)
-    async def ent(it, b):
-        if not tem_permissao(it.user, 'mediador'): return await it.response.send_message("❌ Sem permissão.", ephemeral=True)
-        if it.user.id not in lista_mediadores: lista_mediadores.append(it.user.id)
-        await it.response.send_message(embed=gerar_embed_sucesso(it.user), ephemeral=True)
-    @discord.ui.button(label='Sair', style=discord.ButtonStyle.danger)
-    async def sai(it, b):
-        if it.user.id in lista_mediadores: lista_mediadores.remove(it.user.id)
-        await it.response.send_message(embed=gerar_embed_sucesso(it.user), ephemeral=True)
-    v.add_item(ent); v.add_item(sai)
-    await i.response.send_message(embed=emb, view=v)
+@bot.tree.command(name="criar_filas", description="Gera painéis de aposta com vários valores")
+async def criar_filas(interaction: discord.Interaction):
+    if not tem_permissao(interaction.user, 'admin'): return await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+    await interaction.response.send_modal(FilaModal())
 
-@bot.tree.command(name="pix")
-async def cmd_pix(i):
-    if not tem_permissao(i.user, 'pix'): return await i.response.send_message("❌ Sem permissão.", ephemeral=True)
-    emb = discord.Embed(title="Painel PIX", description="Configure a chave.", color=0x2b2d31).set_thumbnail(url=banner_db)
-    v = discord.ui.View()
-    @discord.ui.button(label='Chave pix', style=discord.ButtonStyle.success)
-    async def cad(it, b): await it.response.send_modal(CadastrarPixModal())
-    v.add_item(cad)
-    await i.response.send_message(embed=emb, view=v)
+@bot.tree.command(name="mediador", description="Abre o painel da fila controladora")
+async def mediador(interaction: discord.Interaction):
+    if not tem_permissao(interaction.user, 'mediador'): return await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+    embed = discord.Embed(title="Painel da fila controladora", description="Entre na fila para começar a mediar suas filas\n\n*Nenhum mediador na fila.*", color=discord.Color.from_str('#2b2d31'))
+    embed.set_thumbnail(url=banner_db)
+    await interaction.response.send_message(embed=embed, view=MediadorView(embed))
+
+@bot.tree.command(name="pix", description="Abre o painel para configurar a chave PIX")
+async def pix_comando(interaction: discord.Interaction):
+    if not tem_permissao(interaction.user, 'pix'): return await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+    embed = discord.Embed(title="Painel Para Configurar Chave PIX", description="Gerencie de forma rápida a chave PIX utilizada nas suas filas.\n\nSelecione uma das opções abaixo para cadastrar, visualizar ou editar sua chave PIX.", color=discord.Color.from_str('#2b2d31'))
+    embed.set_thumbnail(url=banner_db)
+    await interaction.response.send_message(embed=embed, view=PixView())
 
 @bot.command(name="logs")
 async def puxar_logs(ctx, membro: discord.Member = None):
@@ -419,7 +453,7 @@ async def perfil(ctx, membro: discord.Member = None):
         except: pass
 
     s = stats_db.get(u.id, {'vitorias': 0, 'derrotas': 0, 'consecutivas': 0, 'total': 0, 'coins': 0})
-    emb = discord.Embed(description=f"🎮 **Estatísticas**\n\nVitórias: {s['vitorias']}\nDerrotas: {s['derrotas']}\nConsecutivas: {s['consecutivas']}\nTotal: {s['total']}\n\n💎 **Coins**: {s['coins']}", color=0x2b2d31)
+    emb = discord.Embed(description=f"🎮 **Estatísticas**\n\nVitórias: {s['vitorias']}\nDerrotas: {s['derrotas']}\nConsecutivas: {s['consecutivas']}\nTotal de Partidas: {s['total']}\n\n💎 **Coins**\n\nCoins: {s['coins']}", color=discord.Color.from_str('#2b2d31'))
     emb.set_author(name=u.name, icon_url=u.display_avatar.url)
     emb.set_thumbnail(url=u.display_avatar.url)
     await ctx.reply(embed=emb)
@@ -427,7 +461,6 @@ async def perfil(ctx, membro: discord.Member = None):
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    print("✅ Bot Full HD Online!")
+    print("✅ Bot Full Configurado e Online!")
 
 bot.run(os.environ.get('TOKEN'))
-    
