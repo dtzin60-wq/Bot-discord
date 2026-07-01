@@ -1,4 +1,4 @@
-const { 
+Const { 
     Client, 
     GatewayIntentBits, 
     EmbedBuilder, 
@@ -215,4 +215,5 @@ client.on('messageCreate', async message => {
     }
 });
 
-client.login(process.env.TOKEN);
+client.login(63fa3eaf64930cae6fd01bbb830bd4bf3e752965df643581a9b14e7cbc4f0ec4);
+    
