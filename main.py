@@ -1,219 +1,166 @@
-Const { 
-    Client, 
-    GatewayIntentBits, 
-    EmbedBuilder, 
-    ActionRowBuilder, 
-    ButtonBuilder, 
-    ButtonStyle, 
-    ChannelType, 
-    PermissionFlagsBits, 
-    UserSelectMenuBuilder,
-    SlashCommandBuilder
-} = require('discord.js');
+import discord
+from discord import app_commands
+from discord.ext import commands
+import os
+import random
+from flask import Flask
+from threading import Thread
 
-const client = new Client({ 
-    intents: [
-        GatewayIntentBits.Guilds, 
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ] 
-});
+# Configuração para manter o bot acordado no Render
+app = Flask('')
+@app.route('/')
+def home():
+    return "Bot Online!"
 
-// Banco de dados simulado (Em produção, o ideal é usar um arquivo JSON ou Banco de Dados)
-let configBot = {
-    bannerAbrir: 'https://i.imgur.com/link_padrao_abrir.png',
-    bannerEncerrar: 'https://i.imgur.com/link_padrao_encerrar.png',
-    logoSucesso: 'https://i.imgur.com/link_padrao_logo.png',
-    canalPainel: null,      // Onde fica o botão de abrir intermédio
-    categoriaTickets: null, // Onde os canais/tópicos de mediação vão abrir
-    canalLogs: null         // Onde cai a mensagem de terminado com sucesso
-};
+def run():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 3000)))
 
-client.once('ready', () => {
-    console.log(`🤖 Bot de Mediação online como ${client.user.tag}!`);
-    
-    // Configuração básica para manter o bot acordado em clouds como o Render
-    const express = require('express');
-    const app = express();
-    app.get('/', (req, res) => res.send('Bot Online!'));
-    app.listen(process.env.PORT || 3000);
-});
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
 
-// Comando /config e /painel_mediação
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-    if (interaction.commandName === 'config') {
-        const bannerAbrir = interaction.options.getString('banner_abrir');
-        const bannerEncerrar = interaction.options.getString('banner_encerrar');
-        const logoSucesso = interaction.options.getString('logo_sucesso');
-        const canalPainel = interaction.options.getChannel('canal_painel');
-        const categoriaTickets = interaction.options.getChannel('categoria_tickets');
-        const canalLogs = interaction.options.getChannel('canal_logs');
+# Banco de dados temporário para armazenar as configurações do painel
+config_bot = {
+    "banner_abrir": "https://i.imgur.com/link_padrao_abrir.png",
+    "banner_encerrar": "https://i.imgur.com/link_padrao_encerrar.png",
+    "logo_sucesso": "https://i.imgur.com/link_padrao_logo.png",
+    "canal_painel": None,
+    "categoria_tickets": None,
+    "canal_logs": None
+}
 
-        if (bannerAbrir) configBot.bannerAbrir = bannerAbrir;
-        if (bannerEncerrar) configBot.bannerEncerrar = bannerEncerrar;
-        if (logoSucesso) configBot.logoSucesso = logoSucesso;
-        if (canalPainel) configBot.canalPainel = canalPainel.id;
-        if (categoriaTickets) configBot.categoriaTickets = categoriaTickets.id;
-        if (canalLogs) configBot.canalLogs = canalLogs.id;
+dados_tickets = {}
 
-        return interaction.reply({ content: '✅ Configurações de canais e aparência atualizadas!', ephemeral: true });
-    }
+@bot.event
+async def on_ready():
+    print("Bot de Mediacao online com sucesso!")
+    keep_alive()
 
-    if (interaction.commandName === 'painel_mediação') {
-        // Verifica se o canal do painel foi configurado, se não, envia no canal atual
-        const targetChannelId = configBot.canalPainel || interaction.channelId;
-        const targetChannel = interaction.guild.channels.cache.get(targetChannelId);
+class MenuUsuarios(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Selecione o usuário com quem você está...", min_values=1, max_values=1)
 
-        const embedInicial = new EmbedBuilder()
-            .setColor('#ff0000')
-            .setTitle('🤝 - SOLICITAR MEDIAÇÃO')
-            .setDescription('🔴 - *Selecione, no menu abaixo, a categoria desejada, oferecemos serviços de intermediação para qualquer tipo de produto ou negociação, sem limitações, garantindo segurança, transparência e agilidade em todo o processo.*')
-            .setImage(configBot.bannerAbrir);
-
-        const botaoAbrir = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('abrir_intermedio')
-                .setLabel('Abrir Intermédio')
-                .setStyle(ButtonStyle.Danger)
-                .setEmoji('🎫')
-        );
-
-        if (configBot.canalPainel) {
-            await targetChannel.send({ embeds: [embedInicial], components: [botaoAbrir] });
-            await interaction.reply({ content: `✅ Painel enviado com sucesso no canal <#${configBot.canalPainel}>!`, ephemeral: true });
-        } else {
-            await interaction.reply({ embeds: [embedInicial], components: [botaoAbrir] });
-        }
-    }
-});
-
-// Lógica de abertura, botões e encerramento
-client.on('interactionCreate', async interaction => {
-    if (interaction.isButton()) {
+    async def callback(self, interaction: discord.Interaction):
+        usuario_selecionado = self.values[0]
+        await interaction.channel.set_permissions(usuario_selecionado, view_channel=True, send_messages=True)
         
-        if (interaction.customId === 'abrir_intermedio') {
-            await interaction.deferReply({ ephemeral: true });
-
-            // Define as opções do canal de ticket (coloca dentro da categoria se estiver configurada)
-            const channelOptions = {
-                name: `ticket-${interaction.user.username}`,
-                type: ChannelType.GuildText,
-                permissionOverwrites: [
-                    { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                    { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                ],
-            };
-
-            if (configBot.categoriaTickets) {
-                channelOptions.parent = configBot.categoriaTickets;
-            }
-
-            // Criar canal de ticket/tópico
-            const canalTicket = await interaction.guild.channels.create(channelOptions);
-
-            const rowIrParaTicket = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setLabel('Ir para o ticket')
-                    .setURL(`https://discord.com/channels/${interaction.guild.id}/${canalTicket.id}`)
-                    .setStyle(ButtonStyle.Link)
-            );
-
-            // Resposta apenas para quem clicou (Mensagem efêmera)
-            await interaction.editReply({
-                content: `✅ | ${interaction.user}, Seu middleman foi aberto **CLIQUE AQUI** para encontrá-lo.`,
-                components: [rowIrParaTicket]
-            });
-
-            // Mensagem de dentro do Ticket
-            const embedTicket = new EmbedBuilder()
-                .setColor('#ff0000')
-                .setTitle('Mediação Manual iniciada')
-                .setDescription(`${interaction.user}\n\nPedido de Middleman criado com sucesso. Bem-vindo ao nosso sistema de middleman! Seu dinheiro será armazenado com segurança durante toda a negociação...\n\nSelecione no menu abaixo o usuário com quem você está negociando ou insira o ID/menção diretamente na conversa.`)
-                .setImage(configBot.bannerEncerrar);
-
-            const menuUsuarios = new ActionRowBuilder().addComponents(
-                new UserSelectMenuBuilder()
-                    .setCustomId('selecionar_usuario_negocio')
-                    .setPlaceholder('Selecione o usuário com quem você está...')
-                    .setMaxValues(1)
-            );
-
-            const botaoEncerrar = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('encerrar_mediacao')
-                    .setLabel('Encerrar Mediação')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji('🗑️')
-            );
-
-            await canalTicket.send({ 
-                embeds: [embedTicket], 
-                components: [menuUsuarios, botaoEncerrar] 
-            });
-        }
-
-        if (interaction.customId === 'encerrar_mediacao') {
-            await interaction.reply({ content: 'Finalizando mediação e enviando relatório...', ephemeral: true });
-
-            // Envia o Log no canal configurado para Intermediários Terminados com Sucesso
-            if (configBot.canalLogs) {
-                const canalDestino = interaction.guild.channels.cache.get(configBot.canalLogs);
-                if (canalDestino) {
-                    const embedSucesso = new EmbedBuilder()
-                        .setColor('#ff0000')
-                        .setTitle('🦊 Intermediação Manual')
-                        .setThumbnail(configBot.logoSucesso)
-                        .addFields(
-                            { name: '• Nova Intermediação concluída com sucesso!', value: 'Proof #4095' },
-                            { name: '• Valor:', value: 'R$ 8,00', inline: false },
-                            { name: '• Participantes:', value: `${interaction.user} e Usuário Convidado`, inline: false },
-                            { name: '• Administrador:', value: `${interaction.user}`, inline: false }
-                        );
-
-                    await canalDestino.send({ embeds: [embedSucesso] });
-                }
-            }
-
-            setTimeout(() => interaction.channel.delete().catch(() => null), 5000);
-        }
-    }
-
-    if (interaction.isUserSelectMenu() && interaction.customId === 'selecionar_usuario_negocio') {
-        const usuarioSelecionado = interaction.users.first();
-        await interaction.channel.permissionOverwrites.edit(usuarioSelecionado.id, {
-            ViewChannel: true,
-            SendMessages: true
-        });
-
-        await interaction.reply({ content: `🤝 ${usuarioSelecionado} foi adicionado à mediação!`, ephemeral: false });
-    }
-});
-
-// Registro dos Slash Commands expandido
-client.on('messageCreate', async message => {
-    if (message.content === '!registrar_comandos' && message.author.id === message.guild.ownerId) {
-        const comandos = [
-            new SlashCommandBuilder()
-                .setName('config')
-                .setDescription('Configura a aparência e os canais do sistema de mediação')
-                .addStringOption(o => o.setName('banner_abrir').setDescription('Link da imagem do banner inicial'))
-                .addStringOption(o => o.setName('banner_encerrar').setDescription('Link da imagem do banner de dentro do ticket'))
-                .addStringOption(o => o.setName('logo_sucesso').setDescription('Link da logo que aparece no log de sucesso'))
-                .addChannelOption(o => o.setName('canal_painel').setDescription('Canal onde o painel com o botão de abrir vai ficar fixado'))
-                .addChannelOption(o => o.setName('categoria_tickets').setDescription('Categoria onde os canais de ticket vão abrir'))
-                .addChannelOption(o => o.setName('canal_logs').setDescription('Canal de logs onde caem as mediações terminadas com sucesso')),
+        if interaction.channel.id in dados_tickets:
+            dados_tickets[interaction.channel.id]["parceiro"] = usuario_selecionado.mention
             
-            new SlashCommandBuilder()
-                .setName('painel_mediação')
-                .setDescription('Envia o painel de solicitar mediação')
-        ];
+        await interaction.response.send_message(f"🤝 {usuario_selecionado.mention} foi adicionado com sucesso ao ticket de mediação!", ephemeral=False)
 
-        await message.guild.commands.set(comandos);
-        message.reply('🚀 Comandos Slash atualizados e registrados com sucesso!');
-    }
-});
+class BotoesTicket(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(MenuUsuarios())
 
-client.login(63fa3eaf64930cae6fd01bbb830bd4bf3e752965df643581a9b14e7cbc4f0ec4);
-    
+    @discord.ui.button(label="Encerrar Mediação", style=discord.ButtonStyle.secondary, emoji="🗑️", custom_id="encerrar_mediacao")
+    async def mantener_encerrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Finalizando mediação e enviando relatório...", ephemeral=True)
+        
+        if config_bot["canal_logs"]:
+            canal_destino = interaction.guild.get_channel(config_bot["canal_logs"])
+            if canal_destino:
+                info = dados_tickets.get(interaction.channel.id, {"criador": interaction.user.mention, "parceiro": "Usuário Selecionado"})
+                
+                embed_sucesso = discord.Embed(title="🦊 Intermediação Manual", color=0xff0000)
+                embed_sucesso.set_thumbnail(url=config_bot["logo_sucesso"])
+                embed_sucesso.add_field(name="• Nova Intermediação concluída com sucesso!", value=f"Proof #{random.randint(1000, 9000)}", inline=False)
+                embed_sucesso.add_field(name="• Valor:", value="R$ 8,00", inline=False)
+                embed_sucesso.add_field(name="• Participantes:", value=f"{info['criador']} e {info['parceiro']}", inline=False)
+                embed_sucesso.add_field(name="• Administrador:", value=f"{interaction.user.mention}", inline=False)
+                
+                await canal_destino.send(embed=embed_sucesso)
+        
+        dados_tickets.pop(interaction.channel.id, None)
+        await interaction.channel.delete()
+
+class BotaoAbrir(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Abrir Intermédio", style=discord.ButtonStyle.danger, emoji="🎫", custom_id="abrir_intermedio")
+    async def iniciar_abrir(self, interaction: discord.Interaction, button: discord.ui.Button):
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        }
+        
+        categoria = None
+        if config_bot["categoria_tickets"]:
+            categoria = interaction.guild.get_channel(config_bot["categoria_tickets"])
+
+        canal_ticket = await interaction.guild.create_text_channel(
+            name=f"ticket-{interaction.user.name}",
+            overwrites=overwrites,
+            category=categoria
+        )
+
+        dados_tickets[canal_ticket.id] = {
+            "criador": interaction.user.mention,
+            "parceiro": "Não selecionado"
+        }
+
+        await interaction.response.send_message(
+            f"✅ | {interaction.user.mention}, Seu middleman foi aberto **[CLIQUE AQUI](https://discord.com/channels/{interaction.guild.id}/{canal_ticket.id})** para encontrá-lo.",
+            ephemeral=True
+        )
+
+        embed_ticket = discord.Embed(
+            title="Mediação Manual iniciada",
+            description=f"{interaction.user.mention}\n\nPedido de Middleman criado com sucesso. Bem-vindo ao nosso sistema de middleman! Seu dinheiro será armazenado com segurança durante toda a negociação...\n\nSelecione no menu abaixo o usuário com quem você está negociando ou insira o ID/menção diretamente na conversa.",
+            color=0xff0000
+        )
+        embed_ticket.set_image(url=config_bot["banner_encerrar"])
+
+        await canal_ticket.send(embed=embed_ticket, view=BotoesTicket())
+
+@bot.tree.command(name="config", description="Configura o menu de intermediação")
+async def comando_config(
+    interaction: discord.Interaction, 
+    banner_abrir: str = None, 
+    banner_encerrar: str = None, 
+    logo_sucesso: str = None,
+    canal_painel: discord.TextChannel = None,
+    categoria_tickets: discord.CategoryChannel = None,
+    canal_logs: discord.TextChannel = None
+):
+    if banner_abrir: config_bot["banner_abrir"] = banner_abrir
+    if banner_encerrar: config_bot["banner_encerrar"] = banner_encerrar
+    if logo_sucesso: config_bot["logo_sucesso"] = logo_sucesso
+    if canal_painel: config_bot["canal_painel"] = canal_painel.id
+    if categoria_tickets: config_bot["categoria_tickets"] = categoria_tickets.id
+    if canal_logs: config_bot["canal_logs"] = canal_logs.id
+
+    await interaction.response.send_message("✅ Configurações de canais e aparência atualizadas com sucesso!", ephemeral=True)
+
+@bot.tree.command(name="painel_mediação", description="Envia o painel principal de mediação")
+async def comando_painel(interaction: discord.Interaction):
+    canal_id = config_bot["canal_painel"] or interaction.channel_id
+    canal_alvo = interaction.guild.get_channel(canal_id)
+
+    embed_inicial = discord.Embed(
+        title="🤝 - SOLICITAR MEDIAÇÃO",
+        description="🔴 - *Selecione, no menu abaixo, a categoria desejada, oferecemos serviços de intermediação para qualquer tipo de produto ou negociação, sem limitações, garantindo segurança, transparência e agilidade em todo o processo.*",
+        color=0xff0000
+    )
+    embed_inicial.set_image(url=config_bot["banner_abrir"])
+
+    if config_bot["canal_painel"]:
+        await canal_alvo.send(embed=embed_inicial, view=BotaoAbrir())
+        await interaction.response.send_message(f"✅ Painel enviado no canal {canal_alvo.mention}!", ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed_inicial, view=BotaoAbrir())
+
+@bot.command()
+async def registrar_comandos(ctx):
+    if ctx.author.id == ctx.guild.owner_id:
+        await bot.tree.sync()
+        await ctx.send("🚀 Comandos Slash sincronizados com o Discord com sucesso!")
+
+bot.run(os.environ.get('63fa3eaf64930cae6fd01bbb830bd4bf3e752965df643581a9b14e7cbc4f0ec4'))
+                
