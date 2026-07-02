@@ -1,60 +1,81 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
+from discord import app_commands
+import logging
 
-# Configuração dos Intents
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+# Configuração de logs para debug
+logging.basicConfig(level=logging.INFO)
 
-# Armazenamento simples das configurações (em memória)
-config = {
-    "embed_image": "https://link_da_imagem_1.png",
-    "final_logo": "https://link_da_logo_4.png"
-}
+class BotMediação(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=discord.Intents.all())
 
-# 1. Interface de Abertura (Botão)
-class TicketView(discord.ui.View):
+    async def setup_hook(self):
+        # Registra as views para persistência
+        self.add_view(TicketLauncher())
+        await self.tree.sync()
+        print("Bot sincronizado com sucesso.")
+
+bot = BotMediação()
+
+# --- 1. Botão de Lançamento ---
+class TicketLauncher(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Abrir Intermédio", style=discord.ButtonStyle.danger, custom_id="btn_abrir")
-    async def abrir(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Mensagem Ephemeral (só o usuário vê - Referência 1000038019.jpg)
-        await interaction.response.send_message(f"✅ | {interaction.user.mention}, Seu middleman foi aberto. CLIQUE AQUI para encontrá-lo.", ephemeral=True)
+    @discord.ui.button(label="Abrir Intermédio", style=discord.ButtonStyle.danger, custom_id="abrir_ticket")
+    async def abrir_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Imagem 2: Mensagem Ephemeral
+        await interaction.response.send_message("✅ | Seu middleman foi aberto. CLIQUE AQUI para encontrá-lo.", ephemeral=True)
         
-        # Criação do ticket
+        # Criação do canal privado
         guild = interaction.guild
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
+        
         channel = await guild.create_text_channel(name=f"ticket-{interaction.user.name}", overwrites=overwrites)
         
-        # Embed dentro do ticket (Referência 1000038020.jpg)
-        embed = discord.Embed(title="Mediação Manual iniciada", description="Pedido de Middleman criado com sucesso. Selecione o usuário abaixo.")
+        # Embed dentro do ticket
+        embed = discord.Embed(title="Mediação Manual iniciada", description="Bem-vindo ao nosso sistema de middleman! Selecione o usuário abaixo.")
         await channel.send(embed=embed, view=UserSelectView())
 
-# 2. Menu de Seleção de Usuário
+# --- 2. Seleção de Usuário (Correção do Erro) ---
 class UserSelectView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(UserSelectMenu())
+
+class UserSelectMenu(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Selecione o usuário que você está mediando", min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        # Ação após selecionar o usuário
+        user_selected = self.values[0]
+        await interaction.response.send_message(f"✅ Usuário {user_selected.mention} selecionado para a mediação.")
         
-    @discord.ui.user_select(placeholder="Selecione o usuário que você está mediando")
-    async def select_user(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
-        await interaction.response.send_message(f"Usuário {select.values[0].mention} selecionado.")
+        # Aqui você adicionaria o comando para dar permissão ao usuário no canal
+        await interaction.channel.set_permissions(user_selected, read_messages=True, send_messages=True)
 
-# 3. Comando de Configuração (/bot_config)
-@bot.tree.command(name="bot_config", description="Configurar o sistema de intermediação")
+# --- 3. Comando de Configuração ---
+@bot.tree.command(name="bot_config", description="Configuração do sistema")
+@app_commands.checks.has_permissions(administrator=True)
 async def bot_config(interaction: discord.Interaction, foto_interface: str, logo_final: str):
-    config["embed_image"] = foto_interface
-    config["final_logo"] = logo_final
-    await interaction.response.send_message("Configurações salvas com sucesso!", ephemeral=True)
+    # Lógica para salvar links (pode ser enviada para um arquivo JSON)
+    await interaction.response.send_message(f"Configurações recebidas.\nInterface: {foto_interface}\nLogo: {logo_final}", ephemeral=True)
 
-@bot.event
-async def on_ready():
-    await bot.tree.sync()
-    print(f"Bot online como {bot.user}")
+# --- 4. Sistema de Finalização (Lógica de Logs) ---
+class FinalizarView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Finalizar Mediação", style=discord.ButtonStyle.success)
+    async def finalizar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Referência 4: Lógica para enviar para canal de logs
+        await interaction.response.send_message("Mediação finalizada com sucesso!")
+        # Implementar deleção ou arquivamento do canal aqui
 
 bot.run("MTUyMTkyNzA1MDU2OTU4MDc4NQ.GDgV1s.h077bzqnavOJey3LG1kbOY2CQWGcQw05oxVpWI")
