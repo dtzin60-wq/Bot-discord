@@ -154,7 +154,16 @@ Taxa 7: {taxes["tax7"]}%
 @bot.tree.command(name="bot_config", description="Painel de configuração")
 async def bot_config(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="
+        title="⚙️ Painel de Configuração",
+        description="Use os botões abaixo para configurar o bot.",
+        color=discord.Color.green()
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=ConfigView(),
+        ephemeral=True
+    )
 
 class TicketView(discord.ui.View):
     def __init__(self):
