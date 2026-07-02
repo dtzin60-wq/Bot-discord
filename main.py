@@ -1,199 +1,360 @@
-import os
 import discord
-from discord import app_commands
 from discord.ext import commands
-from flask import Flask
-from threading import Thread
+from discord import app_commands
+import qrcode
+import io
+import json
+import os
 
-# 🌐 1. CONFIGURAÇÃO DO SERVIDOR WEB (Para o Render manter 24/7)
-app = Flask('')
+TOKEN = "COLOQUE_SEU_TOKEN_AQUI"
 
-@app.route('/')
-def home():
-    return "Bot de Intermédio Online!"
+CONFIG = {
+    "staff_role_id": 0,
+    "logs_channel_id": 0,
+    "finished_channel_id": 0,
+    "ticket_category_id": 0,
 
-def run():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    "pix": {
+        "type": "",
+        "key": "",
+        "name": "",
+        "message": "Realize o pagamento via PIX."
+    },
 
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
+    "interface": {
+        "banner_url": "",
+        "finish_logo_url": "",
+        "open_message": "Clique abaixo para abrir uma mediação."
+    },
 
-# 🤖 2. CONFIGURAÇÃO PRINCIPAL DO BOT
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+    "buttons": {
+        "open_color": "green",
+        "close_color": "red"
+    },
 
-class MiddlemanBot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
-        # Memória temporária para guardar as configurações
-        self.config_dados = {
-            "banner_abrir": None,
-            "banner_encerrar": None,
-            "logo_sucesso": None,
-            "canal_abrir_id": None,
-            "canal_topico_id": None,
-            "canal_sucesso_id": None
-        }
+    "taxes": {
+        "tax1": 5,
+        "tax2": 8,
+        "tax3": 12,
+        "tax4": 20,
+        "tax5": 30,
+        "tax6": 50,
+        "tax7": 1
+    }
+}
 
-    async def setup_hook(self):
-        # Sincroniza os comandos de barra (/config) automaticamente
-        await self.tree.sync()
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-bot = MiddlemanBot()
+def calculate_tax(value):
+    taxes = CONFIG["taxes"]
 
-# 🛠️ 3. INTERFACES VISUAIS (BOTÕES E TELAS)
+    if value <= 50:
+        return taxes["tax1"]
+    elif value <= 100:
+        return taxes["tax2"]
+    elif value <= 200:
+        return taxes["tax3"]
+    elif value <= 500:
+        return taxes["tax4"]
+    elif value <= 700:
+        return taxes["tax5"]
+    elif value <= 1000:
+        return taxes["tax6"]
+    else:
+        return value * (taxes["tax7"] / 100)
 
-# Tela 5: Botão de Encerrar dentro do Tópico de Mediação
-class EncerrarView(discord.ui.View):
+
+def generate_qr(data):
+    qr = qrcode.make(data)
+    buffer = io.BytesIO()
+    qr.save(buffer, "PNG")
+    buffer.seek(0)
+    return buffer
+
+
+def save_config():
+    with open("config.json", "w", encoding="utf-8") as f:
+        json.dump(CONFIG, f, indent=4)
+
+
+def load_config():
+    global CONFIG
+
+    if os.path.exists("config.json"):
+        with open("config.json", "r", encoding="utf-8") as f:
+            CONFIG = json.load(f)
+
+
+load_config()
+
+class ConfigView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Encerrar Mediação", style=discord.ButtonStyle.danger, custom_id="btn_encerrar")
-    async def encerrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        canal_sucesso_id = bot.config_dados["canal_sucesso_id"]
-        logo = bot.config_dados["logo_sucesso"]
-        banner_fim = bot.config_dados["banner_encerrar"]
-
-        # Tela 7: Envia logs de sucesso no canal configurado
-        if canal_sucesso_id:
-            canal_sucesso = bot.get_channel(int(canal_sucesso_id))
-            if canal_sucesso:
-                embed_sucesso = discord.Embed(
-                    title="🤝 Intermédio Finalizado com Sucesso!",
-                    description=f"A mediação realizada no tópico **{interaction.channel.name}** foi concluída.",
-                    color=discord.Color.green()
-                )
-                if logo:
-                    embed_sucesso.set_thumbnail(url=logo)
-                if banner_fim:
-                    embed_sucesso.set_image(url=banner_fim)
-                
-                await canal_sucesso.send(embed=embed_sucesso)
-
-        await interaction.response.send_message("🔒 Este intermédio foi finalizado. O canal será fechado em breve.", ephemeral=True)
-        await interaction.channel.delete()
-
-# Tela 4: Menu de seleção de usuários dentro do chat criado
-class UsuariosView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Selecione os participantes da mediação...", min_values=1, max_values=5)
-    async def selecionar_usuarios(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
-        usuarios_mencionados = ", ".join([user.mention for user in select.values])
-        await interaction.response.send_message(f"👥 **Usuários adicionados ao intermédio:** {usuarios_mencionados}", ephemeral=False)
-
-# Tela 3: Botão de Entrar que aparece no Tópico criado
-class EntrarView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Entrar no Intermédio", style=discord.ButtonStyle.success, custom_id="btn_entrar_chat")
-    async def entrar_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Tela 4: Exibe o seletor de usuários e o botão de encerrar
-        view_painel = discord.ui.View()
-        view_painel.add_item(UsuariosView().children[0]) # Adiciona o seletor
-        view_painel.add_item(EncerrarView().children[0])  # Adiciona o botão encerrar
-        
-        await interaction.response.send_message(
-            f"👋 Bem-vindo ao suporte de mediação, {interaction.user.mention}! Use o menu abaixo para definir os envolvidos:",
-            view=view_painel,
-            ephemeral=False
+    @discord.ui.button(label="Configurar PIX", style=discord.ButtonStyle.success)
+    async def pix_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="💰 Configuração PIX",
+            description=f"""
+Tipo: {CONFIG["pix"]["type"]}
+Chave: {CONFIG["pix"]["key"]}
+Nome: {CONFIG["pix"]["name"]}
+            """,
+            color=discord.Color.green()
         )
 
-# Tela 1: Botão inicial para "Abrir Intermédio"
-class AbrirIntermedioView(discord.ui.View):
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Configurar Taxas", style=discord.ButtonStyle.primary)
+    async def tax_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        taxes = CONFIG["taxes"]
+
+        embed = discord.Embed(
+            title="📈 Taxas Configuradas",
+            description=f"""
+Taxa 1: {taxes["tax1"]}
+Taxa 2: {taxes["tax2"]}
+Taxa 3: {taxes["tax3"]}
+Taxa 4: {taxes["tax4"]}
+Taxa 5: {taxes["tax5"]}
+Taxa 6: {taxes["tax6"]}
+Taxa 7: {taxes["tax7"]}%
+            """,
+            color=discord.Color.blue()
+        )
+
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Painel Mediação", style=discord.ButtonStyle.secondary)
+    async def panel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🔒 Sistema Middleman",
+            description=CONFIG["interface"]["open_message"],
+            color=discord.Color.green()
+        )
+
+        await interaction.channel.send(
+            embed=embed,
+            view=TicketView()
+        )
+
+        await interaction.response.send_message(
+            "Painel enviado com sucesso.",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(name="bot_config", description="Painel de configuração")
+async def bot_config(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="
+
+class TicketView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Abrir Intermédio", style=discord.ButtonStyle.primary, custom_id="btn_abrir_intermedio")
-    async def abrir(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Tela 2: Mensagem efêmera (visível apenas para quem clicou)
-        await interaction.response.send_message("⏳ Criando sua sala de mediação privada... Aguarde.", ephemeral=True)
+    @discord.ui.button(label="Abrir Intermédio", style=discord.ButtonStyle.success)
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        category = guild.get_channel(CONFIG["ticket_category_id"])
 
-        canal_topico_id = bot.config_dados["canal_topico_id"]
-        categoria_alvo = bot.get_channel(int(canal_topico_id)) if canal_topico_id else interaction.channel.category
+        # Anti-ticket duplicado
+        for channel in guild.channels:
+            if channel.name == f"ticket-{interaction.user.id}":
+                await interaction.response.send_message(
+                    "Você já possui um ticket aberto.",
+                    ephemeral=True
+                )
+                return
 
-        # Cria o canal/tópico de texto exclusivo para a mediação
-        nome_canal = f"🔴-intermedio-{interaction.user.name}"
-        
         overwrites = {
-            interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True
+            )
         }
 
-        novo_canal = await interaction.guild.create_text_channel(
-            name=nome_canal,
-            category=categoria_alvo if isinstance(categoria_alvo, discord.CategoryChannel) else None,
+        if CONFIG["staff_role_id"] != 0:
+            staff_role = guild.get_role(CONFIG["staff_role_id"])
+            if staff_role:
+                overwrites[staff_role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True
+                )
+
+        channel = await guild.create_text_channel(
+            name=f"ticket-{interaction.user.id}",
+            category=category,
             overwrites=overwrites
         )
 
-        # Tela 3: Envia a mensagem com o botão "Entrar" no novo canal
-        embed_sala = discord.Embed(
-            title="🎯 Nova Mediação Iniciada",
-            description="Clique no botão abaixo para liberar o painel de gerenciamento do intermédio.",
+        embed = discord.Embed(
+            title="🎫 Ticket Criado",
+            description="""
+Sua mediação foi iniciada com sucesso.
+
+Próximos passos:
+1 - Escolher usuário mediado
+2 - informa valor  
+3 - gerar pix
+        """,
+            color=discord.Color.green()
+        )
+
+        await channel.send(
+            content=f"{interaction.user.mention}",
+            embed=embed
+        )
+
+        await interaction.response.send_message(
+            f"Ticket criado com sucesso: {channel.mention}",
+            ephemeral=True
+                        )
+
+ class MemberSelect(discord.ui.Select):
+    def __init__(self, members):
+        options = []
+
+        for member in members[:25]:
+            if not member.bot:
+                options.append(
+                    discord.SelectOption(
+                        label=member.name,
+                        value=str(member.id)
+                    )
+                )
+
+        super().__init__(
+            placeholder="Selecione o usuário mediado",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_id = int(self.values[0])
+        member = interaction.guild.get_member(selected_id)
+
+        await interaction.channel.set_permissions(
+            member,
+            view_channel=True,
+            send_messages=True
+        )
+
+        embed = discord.Embed(
+            title="👤 Usuário Selecionado",
+            description=f"{member.mention} foi adicionado à mediação.",
             color=discord.Color.blue()
         )
-        if bot.config_dados["banner_abrir"]:
-            embed_sala.set_image(url=bot.config_dados["banner_abrir"])
 
-        await novo_canal.send(embed=embed_sala, view=EntrarView())
+        await interaction.response.send_message(embed=embed)
 
-# ⚙️ 4. COMANDO DE CONFIGURAÇÃO MODERNA (/config)
-@bot.tree.command(name="config", description="Configura os canais, banners e logos do sistema de intermédio.")
-@app_commands.describe(
-    canal_abrir="Onde ficará a mensagem com o botão de criar intermédio",
-    canal_topicos="A categoria ou canal onde as salas de suporte serão abertas",
-    canal_sucesso="Onde cairão os logs de intermédios finalizados com sucesso",
-    banner_abrir="URL da imagem para o banner de abertura",
-    banner_encerrar="URL da imagem para o banner de encerramento",
-    logo_sucesso="URL da imagem para a logo de sucesso"
-)
-async def config(
-    interaction: discord.Interaction,
-    canal_abrir: discord.TextChannel,
-    canal_topicos: discord.TextChannel,
-    canal_sucesso: discord.TextChannel,
-    banner_abrir: str,
-    banner_encerrar: str,
-    logo_sucesso: str
-):
-    # Salva tudo nas variáveis dentro da memória do Bot
-    bot.config_dados["canal_abrir_id"] = canal_abrir.id
-    bot.config_dados["canal_topico_id"] = canal_topicos.id
-    bot.config_dados["canal_sucesso_id"] = canal_sucesso.id
-    bot.config_dados["banner_abrir"] = banner_abrir
-    bot.config_dados["banner_encerrar"] = banner_encerrar
-    bot.config_dados["logo_sucesso"] = logo_sucesso
 
-    await interaction.response.send_message("✅ Configurações salvas na memória com sucesso!", ephemeral=True)
+class MemberView(discord.ui.View):
+    def __init__(self, members):
+        super().__init__(timeout=None)
+        self.add_item(MemberSelect(members)) 
 
-    # Tela 1: Envia automaticamente o painel de abertura no canal escolhido
-    embed_inicial = discord.Embed(
-        title="💼 Sistema de Intermédio",
-        description="Precisa de mediação segura para suas negociações? Clique no botão abaixo para abrir um atendimento privado.",
-        color=discord.Color.blue()
+@bot.tree.command(name="finalizar", description="Finalizar mediação")
+async def finalizar(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="✅ Mediação Finalizada",
+        description="Mediação concluída com sucesso.",
+        color=discord.Color.green()
     )
-    if banner_abrir:
-        embed_inicial.set_image(url=banner_abrir)
 
-    await canal_abrir.send(embed=embed_inicial, view=AbrirIntermedioView())
+    channel = bot.get_channel(CONFIG["finished_channel_id"])
+    if channel:
+        await channel.send(embed=embed)
+
+    await interaction.response.send_message("Mediação finalizada.")
+
+
+@bot.tree.command(name="cancelar", description="Cancelar mediação")
+async def cancelar(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="❌ Mediação Cancelada",
+        description="Mediação cancelada.",
+        color=discord.Color.red()
+    )
+
+    await interaction.channel.send(embed=embed)
+    await interaction.response.send_message("Mediação cancelada.")
+
+
+@bot.tree.command(name="pagar", description="Gerar PIX")
+@app_commands.describe(valor="Valor da negociação")
+async def pagar(interaction: discord.Interaction, valor: float):
+    taxa = calculate_tax(valor)
+    total = valor + taxa
+
+    pix_data = f"""
+PIX: {CONFIG["pix"]["key"]}
+VALOR: R$ {total}
+"""
+
+    qr = generate_qr(pix_data)
+    file = discord.File(qr, filename="pix.png")
+
+    embed = discord.Embed(
+        title="💰 Pagamento PIX",
+        color=discord.Color.green()
+    )
+
+    embed.add_field(name="Valor", value=f"R$ {valor}", inline=False)
+    embed.add_field(name="Taxa", value=f"R$ {taxa}", inline=False)
+    embed.add_field(name="Total", value=f"R$ {total}", inline=False)
+    embed.set_image(url="attachment://pix.png")
+
+    await interaction.response.send_message(
+        embed=embed,
+        file=file
+    )
+
+@bot.tree.command(name="add", description="Adicionar usuário ao ticket")
+@app_commands.describe(usuario="Usuário")
+async def add(interaction: discord.Interaction, usuario: discord.Member):
+    await interaction.channel.set_permissions(
+        usuario,
+        view_channel=True,
+        send_messages=True
+    )
+
+    await interaction.response.send_message(
+        f"{usuario.mention} foi adicionado ao ticket."
+    )
+
+
+@bot.tree.command(name="remove", description="Remover usuário do ticket")
+@app_commands.describe(usuario="Usuário")
+async def remove(interaction: discord.Interaction, usuario: discord.Member):
+    await interaction.channel.set_permissions(
+        usuario,
+        overwrite=None
+    )
+
+    await interaction.response.send_message(
+        f"{usuario.mention} foi removido do ticket."
+    )
+
 
 @bot.event
 async def on_ready():
-    print(f"🤖 Bot conectado com sucesso como: {bot.user.name}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"{len(synced)} comandos sincronizados.")
+    except Exception as e:
+        print(e)
 
-# 🚀 5. EXECUÇÃO
-if __name__ == "__main__":
-    keep_alive() # Inicia o Flask para o Render
-    
-    token = os.environ.get("TOKEN")
-    if token is None:
-        raise ValueError("ERRO: Variável 'TOKEN' não configurada no Render!")
-        
-    bot.run("MTUyMTkyNzA1MDU2OTU4MDc4NQ.GDgV1s.h077bzqnavOJey3LG1kbOY2CQWGcQw05oxVpWI")
-                 
+    print(f"Bot online: {bot.user}")
+
+
+bot.run("MTUyMTkyNzA1MDU2OTU4MDc4NQ.GDgV1s.h077bzqnavOJey3LG1kbOY2CQWGcQw05oxVpWI")
